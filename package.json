@@ -3,9 +3,9 @@
     "version": "1.0.0",
     "description": "AI Trading Agents for Monad Blockchain",
     "type": "module",
-    "main": "orchestrator.mjs",
+    "main": "index.mjs",
     "scripts": {
-        "start": "node orchestrator.mjs",
+        "start": "node index.mjs",
         "trading-oracle": "cd trading-oracle && npm start",
         "prediction-bot": "cd prediction-bot && npm start",
         "market-analyzer": "cd market-analyzer && npm start"
