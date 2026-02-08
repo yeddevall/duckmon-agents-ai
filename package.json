@@ -1,0 +1,26 @@
+{
+    "name": "duckmon-agents",
+    "version": "1.0.0",
+    "description": "AI Trading Agents for Monad Blockchain",
+    "type": "module",
+    "main": "orchestrator.mjs",
+    "scripts": {
+        "start": "node orchestrator.mjs",
+        "trading-oracle": "cd trading-oracle && npm start",
+        "prediction-bot": "cd prediction-bot && npm start",
+        "market-analyzer": "cd market-analyzer && npm start"
+    },
+    "keywords": [
+        "monad",
+        "blockchain",
+        "trading",
+        "ai",
+        "agents"
+    ],
+    "author": "DUCKMON",
+    "license": "MIT",
+    "dependencies": {
+        "dotenv": "^16.3.1",
+        "ethers": "^6.9.0"
+    }
+}

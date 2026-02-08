@@ -1,0 +1,14 @@
+{
+    "name": "duckmon-contracts",
+    "version": "1.0.0",
+    "description": "DuckmonAgent Smart Contract",
+    "scripts": {
+        "compile": "npx hardhat compile",
+        "deploy": "npx hardhat run scripts/deploy.js --network monad"
+    },
+    "devDependencies": {
+        "hardhat": "^2.19.0",
+        "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+        "dotenv": "^16.3.1"
+    }
+}
