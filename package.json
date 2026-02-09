@@ -5,10 +5,10 @@
     "type": "module",
     "main": "index.mjs",
     "scripts": {
-        "start": "node index.mjs",
-        "trading-oracle": "cd trading-oracle && npm start",
-        "prediction-bot": "cd prediction-bot && npm start",
-        "market-analyzer": "cd market-analyzer && npm start"
+        "start": "node index.mjs & node prediction-bot/index.js",
+        "trading-oracle": "node trading-oracle/index.js",
+        "prediction-bot": "node prediction-bot/index.js",
+        "market-analyzer": "node market-analyzer/index.js"
     },
     "keywords": [
         "monad",
