@@ -13,7 +13,7 @@ const config = {
     rpcUrl: process.env.RPC_URL || 'https://rpc.monad.xyz',
     privateKey: process.env.PRIVATE_KEY,
     contractAddress: process.env.DUCK_SIGNALS_ADDRESS || '0x9386CA8FC92A342E3c9DFD9E913Fa860d5761687',
-    updateInterval: parseInt(process.env.UPDATE_INTERVAL || '3600000'), // 1 hour default
+    updateInterval: parseInt(process.env.UPDATE_INTERVAL || '900000'), // 15 minutes default
 };
 
 // Contract ABI (simplified)
