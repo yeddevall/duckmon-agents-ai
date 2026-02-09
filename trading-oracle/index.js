@@ -17,7 +17,7 @@ const AGENT_VERSION = '2.0.0';
 
 // Configuration
 const CONFIG = {
-    ANALYSIS_INTERVAL: 30000,     // 30 seconds
+    ANALYSIS_INTERVAL: 3600000,     // 1 hour
     HISTORY_SIZE: 200,            // More data points
     MIN_CONFIDENCE_THRESHOLD: 60, // Only post high-confidence signals
     RSI_OVERSOLD: 30,

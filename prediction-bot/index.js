@@ -16,7 +16,7 @@ const AGENT_VERSION = '2.0.0';
 
 // Configuration
 const CONFIG = {
-    PREDICTION_INTERVAL: 60000,        // 1 minute
+    PREDICTION_INTERVAL: 3600000,        // 1 hour
     PREDICTION_HORIZONS: [5, 15, 60],  // Minutes ahead
     HISTORY_SIZE: 300,
     MIN_CONFIDENCE: 55,

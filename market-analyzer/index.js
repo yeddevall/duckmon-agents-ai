@@ -16,7 +16,7 @@ const AGENT_VERSION = '2.0.0';
 
 // Configuration
 const CONFIG = {
-    ANALYSIS_INTERVAL: 20000,          // 20 seconds
+    ANALYSIS_INTERVAL: 3600000,        // 1 hour
     HISTORY_SIZE: 500,
     WHALE_THRESHOLD: 0.03,             // 3% sudden move = whale
     VOLATILITY_ALERT_THRESHOLD: 0.08,  // 8% volatility
