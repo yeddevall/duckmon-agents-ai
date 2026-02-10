@@ -1,21 +1,33 @@
 {
     "name": "duckmon-agents",
-    "version": "1.0.0",
-    "description": "AI Trading Agents for Monad Blockchain",
+    "version": "2.0.0",
+    "description": "Advanced AI Trading Agents for Monad Blockchain - Leveraging 10K TPS & 400ms Blocks",
     "type": "module",
     "main": "index.mjs",
     "scripts": {
-        "start": "node index.mjs & node prediction-bot/index.js",
+        "start": "node index.mjs",
+        "start:all": "concurrently \"npm run trading-oracle\" \"npm run prediction-bot\" \"npm run market-analyzer\" \"npm run whale-observer\"",
         "trading-oracle": "node trading-oracle/index.js",
         "prediction-bot": "node prediction-bot/index.js",
-        "market-analyzer": "node market-analyzer/index.js"
+        "market-analyzer": "node market-analyzer/index.js",
+        "whale-observer": "node whale-observer/index.js",
+        "mev-bot": "node mev-bot/index.js",
+        "token-launch-detector": "node token-launch-detector/index.js",
+        "gas-optimizer": "node gas-optimizer/index.js",
+        "mev-suite": "concurrently \"npm run mev-bot\" \"npm run token-launch-detector\" \"npm run gas-optimizer\""
     },
     "keywords": [
         "monad",
         "blockchain",
         "trading",
         "ai",
-        "agents"
+        "agents",
+        "mev",
+        "arbitrage",
+        "defi",
+        "whale-tracking",
+        "gas-optimization",
+        "token-launch"
     ],
     "author": "DUCKMON",
     "license": "MIT",
@@ -23,5 +35,11 @@
         "dotenv": "^16.3.1",
         "ethers": "^6.9.0",
         "viem": "^2.45.1"
+    },
+    "devDependencies": {
+        "concurrently": "^8.2.2"
+    },
+    "engines": {
+        "node": ">=18.0.0"
     }
 }

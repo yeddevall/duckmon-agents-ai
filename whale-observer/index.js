@@ -1,18 +1,20 @@
 import { createPublicClient, createWalletClient, http, formatEther, parseEther } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { monadMainnet, contracts, TOKENS, WHALE_CONFIG, ERC20_ABI, DUCK_SIGNALS_ABI } from './config.js';
+import AI from '../shared/aiModule.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' });
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                      🐋 DUCKMON WHALE OBSERVER v1.0                           ║
-// ║              Advanced Whale Tracking & Network Intelligence                    ║
-// ║                           Powered by Monad                                     ║
+// ║                      🐋 DUCKMON WHALE OBSERVER v2.0                           ║
+// ║       Advanced AI-Powered Whale Tracking & Network Intelligence               ║
+// ║              Leveraging Monad's 10K TPS & 400ms Blocks                        ║
+// ║                           Powered by Duckmon                                    ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
-const AGENT_NAME = 'Whale Observer v1.0';
-const AGENT_VERSION = '1.0.0';
+const AGENT_NAME = 'Whale Observer v2.0';
+const AGENT_VERSION = '2.0.0';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // STATE MANAGEMENT
@@ -384,7 +386,7 @@ async function registerAgent() {
 }
 
 async function postWhaleAlert(walletData, activity) {
-    const reason = generateWhaleAlertReason(walletData, activity);
+    let reason = generateWhaleAlertReason(walletData, activity);
 
     // Calculate confidence based on impact
     let confidence = 50;
@@ -396,6 +398,46 @@ async function postWhaleAlert(walletData, activity) {
     let signalType = 'HOLD';
     if (activity.sentiment.includes('BULLISH')) signalType = 'BUY';
     else if (activity.sentiment.includes('BEARISH')) signalType = 'SELL';
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AI ENHANCEMENT - Use Gemini for whale behavior analysis
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (AI.isAIEnabled()) {
+        try {
+            console.log('  🧠 Analyzing whale behavior with AI...');
+
+            const aiAnalysis = await AI.analyzeWhaleBehavior({
+                wallet: walletData.address,
+                balanceChange: walletData.balanceChange,
+                newBalance: walletData.balance,
+                percentOfSupply: walletData.percentOfSupply,
+                recentActivity: activity.type,
+                networkStats: {
+                    gasPrice: networkStats.avgGasPrice,
+                    txPerBlock: networkStats.avgTxPerBlock,
+                    congestion: networkStats.congestion || 'LOW'
+                }
+            });
+
+            if (aiAnalysis) {
+                console.log(`  🧠 AI Analysis: ${aiAnalysis.behavior} - ${aiAnalysis.intent}`);
+                console.log(`  🧠 Market Impact: ${aiAnalysis.marketImpact}`);
+                console.log(`  🧠 Recommendation: ${aiAnalysis.recommendation}`);
+
+                // Enhance reason with AI insights
+                reason = `${reason} | 🧠 AI: ${aiAnalysis.behavior} - ${aiAnalysis.intent} | Impact: ${aiAnalysis.marketImpact} | ${aiAnalysis.recommendation}`;
+
+                // Adjust confidence based on AI analysis
+                if (aiAnalysis.marketImpact === 'CRITICAL') {
+                    confidence = Math.max(confidence, 90);
+                } else if (aiAnalysis.marketImpact === 'HIGH') {
+                    confidence = Math.max(confidence, 80);
+                }
+            }
+        } catch (error) {
+            console.log(`  ⚠️  AI analysis failed: ${error.message}`);
+        }
+    }
 
     log.whale(`${activity.type} detected!`);
     console.log(`   ${reason}`);
