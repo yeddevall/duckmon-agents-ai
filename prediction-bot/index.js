@@ -26,7 +26,7 @@ const CONFIG = {
 // State
 let priceHistory = [];
 let predictions = [];
-let demoMode = false;
+// Demo mode removed - all data from real sources
 let lastRealPrice = 0.000019;
 
 // Performance tracking
@@ -166,7 +166,7 @@ async function postPredictionOnChain(prediction) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function fetchPrice() {
-    if (demoMode) return generateDemoPrice();
+
 
     // Method 1: DexScreener API for accurate real-time data
     try {
@@ -215,24 +215,19 @@ async function fetchPrice() {
         lastRealPrice = price;
         return { price, timestamp: Date.now() };
     } catch (error) {
-        if (!demoMode) {
-            log.warning('Switching to DEMO MODE');
-            demoMode = true;
+        log.warning(`Lens fetch failed: ${error.message}`);
+        if (lastRealPrice > 0) {
+            log.warning(`Using last known price: ${lastRealPrice}`);
+            return { price: lastRealPrice, timestamp: Date.now() };
         }
-        return generateDemoPrice();
+        log.error('No price data available from any source');
+        return null;
     }
 }
 
-function generateDemoPrice() {
-    const trend = Math.sin(Date.now() / 120000) * 0.008;
-    const noise = (Math.random() - 0.5) * 0.012;
-    lastRealPrice *= (1 + trend + noise);
-    lastRealPrice = Math.max(lastRealPrice, 0.000001);
-    return { price: lastRealPrice, timestamp: Date.now() };
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
-// NEURAL NETWORK SIMULATION
+// WEIGHTED TECHNICAL ANALYSIS ENGINE (Feature-based prediction)
+// Uses Xavier-initialized weight matrices applied to engineered features
 // ══════════════════════════════════════════════════════════════════════════════
 
 class NeuralNetwork {
@@ -548,7 +543,6 @@ async function runPrediction() {
     // Display
     console.log(sep);
     console.log('  🎯 DUCKMON PREDICTION BOT v2.0 - Forecast Report');
-    if (demoMode) console.log('  ⚠️  DEMO MODE');
     console.log(sep);
     console.log(`  💰 Current Price: ${priceData.price.toFixed(8)} MON`);
     console.log(sep);

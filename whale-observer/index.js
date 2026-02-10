@@ -164,10 +164,10 @@ async function fetchTopHolders() {
         log.warning('Could not fetch top holders from DexScreener');
     }
 
-    // Return known addresses for demo
+    // Return known contract addresses as whale-watch targets
     return [
-        '0x6F6B8F1a20703309951a5127c45B49b1CD981A22', // Bonding Curve Router
-        '0x0B79d71AE99528D1dB24A4148b5f4F865cc2b137', // DEX Router
+        contracts.BONDING_CURVE_ROUTER, // Bonding Curve Router
+        contracts.DEX_ROUTER,           // DEX Router
     ];
 }
 

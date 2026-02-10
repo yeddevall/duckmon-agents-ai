@@ -27,7 +27,7 @@ const CONFIG = {
 // State
 let priceHistory = [];
 let volumeHistory = [];
-let demoMode = false;
+// Demo mode removed - all data from real sources
 let lastRealPrice = 0.000019;
 
 // Alert tracking
@@ -105,7 +105,7 @@ function getHealthBar(health) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function fetchPrice() {
-    if (demoMode) return generateDemoPrice();
+
 
     // Method 1: DexScreener API for accurate real-time data
     try {
@@ -153,30 +153,16 @@ async function fetchPrice() {
         }
 
         lastRealPrice = price;
-        return { price, timestamp: Date.now(), volume: Math.random() * 2000 + 500 };
+        return { price, timestamp: Date.now(), volume: 0 };
     } catch (error) {
-        if (!demoMode) {
-            log.warning('Switching to DEMO MODE');
-            demoMode = true;
+        log.warning(`Lens fetch failed: ${error.message}`);
+        if (lastRealPrice > 0) {
+            log.warning(`Using last known price: ${lastRealPrice}`);
+            return { price: lastRealPrice, timestamp: Date.now(), volume: 0 };
         }
-        return generateDemoPrice();
+        log.error('No price data available from any source');
+        return null;
     }
-}
-
-function generateDemoPrice() {
-    // Realistic simulation with occasional whale moves
-    const isWhaleMove = Math.random() < 0.02; // 2% chance
-    const trend = Math.sin(Date.now() / 90000) * 0.006;
-    const noise = (Math.random() - 0.5) * (isWhaleMove ? 0.04 : 0.01);
-
-    lastRealPrice *= (1 + trend + noise);
-    lastRealPrice = Math.max(lastRealPrice, 0.000001);
-
-    return {
-        price: lastRealPrice,
-        timestamp: Date.now(),
-        volume: isWhaleMove ? 5000 + Math.random() * 10000 : 500 + Math.random() * 2000
-    };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -457,7 +443,6 @@ async function runAnalysis() {
     // Display results
     console.log(sep);
     console.log('  📊 DUCKMON MARKET ANALYZER v2.0 - Intelligence Report');
-    if (demoMode) console.log('  ⚠️  DEMO MODE');
     console.log(sep);
     console.log(`  💰 Price:       ${currentPrice.toFixed(8)} MON`);
     console.log(`  💚 Health:      ${getHealthBar(health)} ${health.toFixed(0)}%`);

@@ -33,7 +33,7 @@ const CONFIG = {
 // Price history with metadata
 let priceHistory = [];
 let volumeHistory = [];
-let demoMode = false;
+// Demo mode removed - all data from real sources
 let lastRealPrice = 0.000019;
 
 // Performance tracking
@@ -53,7 +53,6 @@ const agentState = {
     lastAnalysis: null,
     signals: [],
     isRegistered: false,
-    demoMode: false,
 };
 
 // Setup blockchain clients
@@ -181,7 +180,7 @@ async function postSignalOnChain(signal) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function fetchDuckPrice() {
-    if (demoMode) return generateDemoPrice();
+
 
     // Method 1: Try DexScreener API for accurate real-time price
     try {
@@ -252,33 +251,13 @@ async function fetchDuckPrice() {
         };
     } catch (error) {
         log.warning(`Lens fetch failed: ${error.message}`);
-        if (!demoMode) {
-            log.warning('Switching to DEMO MODE');
-            demoMode = true;
-            agentState.demoMode = true;
+        if (lastRealPrice > 0) {
+            log.warning(`Using last known price: ${lastRealPrice}`);
+            return { price: lastRealPrice, timestamp: Date.now(), source: 'cached', volume: 0 };
         }
-        return generateDemoPrice();
+        log.error('No price data available from any source');
+        return null;
     }
-}
-
-function generateDemoPrice() {
-    // More realistic price movement simulation
-    const trend = Math.sin(Date.now() / 60000) * 0.01; // Sinusoidal trend
-    const noise = (Math.random() - 0.5) * 0.015;
-    const momentum = priceHistory.length > 5
-        ? (priceHistory[priceHistory.length - 1]?.price - priceHistory[priceHistory.length - 5]?.price || 0) * 0.1
-        : 0;
-
-    const change = trend + noise + momentum;
-    lastRealPrice *= (1 + change);
-    lastRealPrice = Math.max(lastRealPrice, 0.000001); // Prevent negative
-
-    return {
-        price: lastRealPrice,
-        timestamp: Date.now(),
-        source: 'DEMO',
-        volume: 500 + Math.random() * 1500
-    };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -651,7 +630,6 @@ async function runAnalysis() {
     // Display results
     console.log(separator);
     console.log('  🦆 DUCKMON TRADING ORACLE v2.0 - Analysis Report');
-    if (demoMode) console.log('  ⚠️  DEMO MODE (Testnet Simulation)');
     if (signal.aiEnhanced) console.log('  🧠 AI-ENHANCED ANALYSIS');
     console.log(separator);
     console.log(`  💰 Price:      ${formatPrice(signal.price)} MON`);

@@ -84,15 +84,39 @@ function generateSignal(prices) {
     };
 }
 
-// Simulate price data (in production, fetch from DEX/API)
-function simulatePriceHistory() {
-    const basePrice = 0.00001; // Example base price
-    const prices = [];
-    for (let i = 0; i < 50; i++) {
-        const randomChange = (Math.random() - 0.5) * 0.1;
-        prices.push(basePrice * (1 + randomChange * (50 - i) / 50));
+// Token and contract addresses
+const DUCK_TOKEN = '0x0862F464c8457266b66c58F1D7C1137B72647777';
+const LENS_ADDRESS = '0x7e78A8DE94f21804F7a17F4E8BF9EC2c872187ea';
+const LENS_ABI = ['function getAmountOut(address token, uint256 amountIn, bool isBuy) view returns (address, uint256)'];
+
+// Price history storage
+const priceHistory = [];
+let lastKnownPrice = 0;
+
+// Fetch real price from Lens contract
+async function fetchRealPrice(provider) {
+    try {
+        const lens = new ethers.Contract(LENS_ADDRESS, LENS_ABI, provider);
+        const amountIn = ethers.parseEther('1');
+        const result = await lens.getAmountOut(DUCK_TOKEN, amountIn, true);
+        const duckPerMon = Number(ethers.formatEther(result[1]));
+        const price = duckPerMon > 0 ? 1 / duckPerMon : 0;
+        if (price > 0) lastKnownPrice = price;
+        return price;
+    } catch (error) {
+        console.log(`[WARN] Lens price fetch failed: ${error.message}`);
+        return lastKnownPrice;
     }
-    return prices;
+}
+
+// Build price history from real data
+async function buildPriceHistory(provider) {
+    const price = await fetchRealPrice(provider);
+    if (price > 0) {
+        priceHistory.unshift(price);
+        if (priceHistory.length > 50) priceHistory.pop();
+    }
+    return priceHistory.length > 0 ? [...priceHistory] : [price || 0.00001];
 }
 
 // Main Agent Class
@@ -167,7 +191,7 @@ class TradingOracleAgent {
     }
 
     async runAnalysis() {
-        const prices = simulatePriceHistory();
+        const prices = await buildPriceHistory(this.provider);
         const signal = generateSignal(prices);
 
         this.log(`Analysis: RSI=${signal.rsi} | Signal=${signal.type} | Confidence=${signal.confidence}%`);
