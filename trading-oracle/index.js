@@ -1,6 +1,7 @@
 import { createPublicClient, createWalletClient, http, formatEther, parseEther } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { monadMainnet, contracts, LENS_ABI, DUCK_SIGNALS_ABI } from './config.js';
+import AI from '../shared/aiModule.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' });
@@ -182,24 +183,77 @@ async function postSignalOnChain(signal) {
 async function fetchDuckPrice() {
     if (demoMode) return generateDemoPrice();
 
+    // Method 1: Try DexScreener API for accurate real-time price
     try {
+        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${DUCK_TOKEN}`);
+        const data = await response.json();
+
+        if (data.pairs && data.pairs.length > 0) {
+            // Find MON pair or use first available
+            const pair = data.pairs.find(p =>
+                p.baseToken?.symbol?.toUpperCase() === 'DUCK' ||
+                p.quoteToken?.symbol?.toUpperCase() === 'MON'
+            ) || data.pairs[0];
+
+            const priceNum = parseFloat(pair.priceNative || pair.priceUsd || 0);
+            if (priceNum > 0) {
+                const volume24h = parseFloat(pair.volume?.h24 || 0);
+                const priceChange24h = parseFloat(pair.priceChange?.h24 || 0);
+                const liquidity = parseFloat(pair.liquidity?.usd || 0);
+
+                lastRealPrice = priceNum;
+                log.info(`DexScreener Price: ${priceNum.toFixed(8)} MON | Vol24h: $${volume24h.toFixed(0)} | Change: ${priceChange24h > 0 ? '+' : ''}${priceChange24h.toFixed(2)}%`);
+
+                return {
+                    price: priceNum,
+                    timestamp: Date.now(),
+                    source: 'DexScreener',
+                    volume: volume24h,
+                    priceChange24h: priceChange24h,
+                    liquidity: liquidity
+                };
+            }
+        }
+    } catch (error) {
+        log.warning(`DexScreener failed: ${error.message}, trying Lens...`);
+    }
+
+    // Method 2: Fallback to Lens contract (on-chain)
+    try {
+        // Get how many DUCK you get for 1 MON
         const amountIn = parseEther('1');
         const result = await publicClient.readContract({
             address: contracts.LENS,
             abi: LENS_ABI,
             functionName: 'getAmountOut',
-            args: [DUCK_TOKEN, amountIn, true],
+            args: [DUCK_TOKEN, amountIn, true], // true = buying DUCK with MON
         });
 
         const amountOut = result[1];
         const duckPerMon = Number(formatEther(amountOut));
-        const priceInMon = duckPerMon > 0 ? 1 / duckPerMon : 0;
+
+        // Price = how many MON for 1 DUCK (inverse of DUCK per MON)
+        const priceInMon = duckPerMon > 0 ? 1 / duckPerMon : lastRealPrice;
+
+        // Sanity check - if price seems wrong, use last known good price
+        if (priceInMon < 0.0000001 || priceInMon > 1000) {
+            log.warning(`Suspicious price ${priceInMon}, using last known: ${lastRealPrice}`);
+            return { price: lastRealPrice, timestamp: Date.now(), source: 'cached', volume: 100 };
+        }
 
         lastRealPrice = priceInMon;
-        return { price: priceInMon, timestamp: Date.now(), source: 'nad.fun', volume: Math.random() * 1000 };
+        log.info(`Lens Price: ${priceInMon.toFixed(8)} MON (${duckPerMon.toFixed(0)} DUCK/MON)`);
+
+        return {
+            price: priceInMon,
+            timestamp: Date.now(),
+            source: 'nad.fun Lens',
+            volume: Math.random() * 1000
+        };
     } catch (error) {
+        log.warning(`Lens fetch failed: ${error.message}`);
         if (!demoMode) {
-            log.warning('Switching to DEMO MODE (testnet detected)');
+            log.warning('Switching to DEMO MODE');
             demoMode = true;
             agentState.demoMode = true;
         }
@@ -465,10 +519,27 @@ class SignalEngine {
             confidence = 50 + Math.random() * 10;
         }
 
+        // Build detailed professional reason with indicator values
+        const priceChange = priceData.length > 1
+            ? ((currentPrice - priceData[priceData.length - 2].price) / priceData[priceData.length - 2].price * 100).toFixed(2)
+            : 0;
+        const priceChange24h = priceData.length > 96
+            ? ((currentPrice - priceData[priceData.length - 96].price) / priceData[priceData.length - 96].price * 100).toFixed(2)
+            : priceChange;
+
+        // Professional detailed reason string
+        const detailedReason = [
+            `RSI: ${rsi.toFixed(1)}`,
+            `MACD: ${macd.histogram > 0 ? 'Bullish' : macd.histogram < 0 ? 'Bearish' : 'Neutral'}`,
+            `Trend: ${trend.direction}`,
+            `Change: ${priceChange > 0 ? '+' : ''}${priceChange}%`,
+            reasons.length > 0 ? reasons.join(', ') : 'Consolidation phase'
+        ].join(' | ');
+
         return {
             type,
             confidence: Math.round(confidence),
-            reason: reasons.length > 0 ? reasons.join(' | ') : 'Market consolidating',
+            reason: detailedReason,
             price: currentPrice,
             indicators: {
                 rsi: rsi.toFixed(2),
@@ -476,6 +547,8 @@ class SignalEngine {
                 trend: trend.direction,
                 atr: (atr * 10000).toFixed(2),
                 vwap: vwap.toFixed(8),
+                priceChange: priceChange,
+                priceChange24h: priceChange24h,
             },
             timestamp: Date.now(),
         };
@@ -511,6 +584,56 @@ async function runAnalysis() {
     // Generate signal
     const signal = signalEngine.generateSignal(priceHistory, volumeHistory);
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AI ENHANCEMENT - Use Gemini for deeper analysis
+    // ═══════════════════════════════════════════════════════════════════════════
+    let aiAnalysis = null;
+    if (AI.isAIEnabled()) {
+        try {
+            console.log('  🧠 Requesting AI analysis...');
+            const currentPrice = priceData.price;
+            const volume24h = priceData.volume || 0;
+            const priceChange24h = priceHistory.length > 96
+                ? ((currentPrice - priceHistory[priceHistory.length - 96].price) / priceHistory[priceHistory.length - 96].price * 100)
+                : 0;
+
+            const rsi = parseFloat(signal.indicators.rsi);
+            const macd = parseFloat(signal.indicators.macd);
+            const bollingerPos = 50; // Simplified
+
+            aiAnalysis = await AI.generateMarketAnalysis({
+                price: currentPrice,
+                priceChange24h,
+                volume24h,
+                rsi,
+                macd,
+                macdSignal: macd * 0.9,
+                bollingerPosition: bollingerPos,
+                momentum: parseFloat(signal.indicators.priceChange || 0),
+                volatility: parseFloat(signal.indicators.atr || 0),
+            });
+
+            if (aiAnalysis) {
+                console.log(`  🧠 AI Signal: ${aiAnalysis.signal} (${aiAnalysis.confidence}%)`);
+                console.log(`  🧠 AI Insight: ${aiAnalysis.reason}`);
+
+                // Enhance signal reason with AI insights
+                const aiReason = AI.formatAISignalReason(aiAnalysis);
+                if (aiReason) {
+                    signal.reason = aiReason;
+                    // Blend confidence with AI
+                    signal.confidence = Math.round((signal.confidence + aiAnalysis.confidence) / 2);
+                    signal.aiEnhanced = true;
+                    signal.aiData = aiAnalysis;
+                }
+            }
+        } catch (error) {
+            console.log(`  ⚠️  AI analysis unavailable: ${error.message}`);
+        }
+    } else {
+        console.log('  ℹ️  AI enhancement disabled (no API key)');
+    }
+
     // Update performance
     performance.totalSignals++;
     performance.lastSignalTime = Date.now();
@@ -529,12 +652,20 @@ async function runAnalysis() {
     console.log(separator);
     console.log('  🦆 DUCKMON TRADING ORACLE v2.0 - Analysis Report');
     if (demoMode) console.log('  ⚠️  DEMO MODE (Testnet Simulation)');
+    if (signal.aiEnhanced) console.log('  🧠 AI-ENHANCED ANALYSIS');
     console.log(separator);
     console.log(`  💰 Price:      ${formatPrice(signal.price)} MON`);
     console.log(`  📊 RSI:        ${signal.indicators.rsi}`);
     console.log(`  📈 MACD:       ${signal.indicators.macd}`);
     console.log(`  🎯 Trend:      ${signal.indicators.trend}`);
     console.log(`  📉 ATR:        ${signal.indicators.atr}`);
+    if (signal.aiData) {
+        console.log(separator);
+        console.log(`  🧠 AI Support:    $${signal.aiData.support || 'N/A'}`);
+        console.log(`  🧠 AI Resistance: $${signal.aiData.resistance || 'N/A'}`);
+        console.log(`  🧠 AI R/R:        ${signal.aiData.riskReward || 'N/A'}`);
+        console.log(`  🧠 AI Sentiment:  ${signal.aiData.sentiment || 'N/A'}`);
+    }
     console.log(separator);
     log.signal(signal.type, `Signal: ${signal.type} (${signal.confidence}% confidence)`);
     console.log(`  📝 Reason:     ${signal.reason}`);

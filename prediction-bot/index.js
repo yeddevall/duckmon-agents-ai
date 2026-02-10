@@ -168,6 +168,33 @@ async function postPredictionOnChain(prediction) {
 async function fetchPrice() {
     if (demoMode) return generateDemoPrice();
 
+    // Method 1: DexScreener API for accurate real-time data
+    try {
+        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contracts.DUCK_TOKEN}`);
+        const data = await response.json();
+
+        if (data.pairs && data.pairs.length > 0) {
+            const pair = data.pairs.find(p =>
+                p.baseToken?.symbol?.toUpperCase() === 'DUCK'
+            ) || data.pairs[0];
+
+            const priceNum = parseFloat(pair.priceNative || 0);
+            if (priceNum > 0) {
+                lastRealPrice = priceNum;
+                log.info(`DexScreener: ${priceNum.toFixed(8)} MON`);
+                return {
+                    price: priceNum,
+                    timestamp: Date.now(),
+                    volume24h: parseFloat(pair.volume?.h24 || 0),
+                    priceChange24h: parseFloat(pair.priceChange?.h24 || 0)
+                };
+            }
+        }
+    } catch (error) {
+        log.warning(`DexScreener error: ${error.message}`);
+    }
+
+    // Method 2: Lens contract fallback
     try {
         const result = await publicClient.readContract({
             address: contracts.LENS,
@@ -177,12 +204,19 @@ async function fetchPrice() {
         });
 
         const duckPerMon = Number(formatEther(result[1]));
-        const price = duckPerMon > 0 ? 1 / duckPerMon : 0;
+        const price = duckPerMon > 0 ? 1 / duckPerMon : lastRealPrice;
+
+        // Sanity check
+        if (price < 0.0000001 || price > 1000) {
+            log.warning(`Invalid price ${price}, using cached`);
+            return { price: lastRealPrice, timestamp: Date.now() };
+        }
+
         lastRealPrice = price;
         return { price, timestamp: Date.now() };
     } catch (error) {
         if (!demoMode) {
-            log.warning('DEMO MODE activated');
+            log.warning('Switching to DEMO MODE');
             demoMode = true;
         }
         return generateDemoPrice();
