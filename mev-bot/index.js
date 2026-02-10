@@ -2,6 +2,7 @@ import { createPublicClient, createWalletClient, http, formatEther, parseEther }
 import { privateKeyToAccount } from 'viem/accounts';
 import { monadMainnet, contracts, MEV_CONFIG, ERC20_ABI, ROUTER_ABI, DUCK_SIGNALS_ABI } from './config.js';
 import AI from '../shared/aiModule.js';
+import { sendMEVOpportunity, startHeartbeat } from '../shared/websocketClient.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' });
@@ -447,6 +448,16 @@ async function scanForOpportunities() {
         const best = opportunities[0];
         performance.totalOpportunities++;
 
+        // Broadcast to WebSocket server
+        await sendMEVOpportunity({
+            type: best.type,
+            profit: best.estimatedProfit,
+            dex1: best.buyDex,
+            dex2: best.sellDex,
+            spread: best.spread,
+            status: 'DETECTED',
+        }).catch(err => log.warning(`WebSocket broadcast failed: ${err.message}`));
+
         await executeMEV(best);
     } else {
         log.info('No profitable opportunities found');
@@ -505,6 +516,10 @@ async function main() {
     }
 
     await registerAgent();
+
+    // Start WebSocket heartbeat
+    const stopHeartbeat = startHeartbeat('mev-bot');
+    log.success('WebSocket heartbeat started');
 
     log.info('MEV strategies enabled:');
     Object.entries(MEV_CONFIG.STRATEGIES).forEach(([strategy, enabled]) => {

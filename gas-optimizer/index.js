@@ -1,5 +1,6 @@
 import { createPublicClient, http, formatGwei } from 'viem';
 import { monadMainnet, GAS_CONFIG } from './config.js';
+import { sendGasPrice, startHeartbeat } from '../shared/websocketClient.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' });
@@ -66,6 +67,16 @@ async function updateGasPrice() {
 
         // Generate recommendation
         const recommendation = generateRecommendation(gasPriceGwei);
+
+        // Broadcast to WebSocket server
+        await sendGasPrice({
+            current: gasPriceGwei,
+            avg: statistics.avgGas,
+            min: statistics.minGas,
+            max: statistics.maxGas,
+            recommendation: recommendation.action,
+            prediction: recommendation.prediction,
+        }).catch(err => console.error(`WebSocket broadcast failed: ${err.message}`));
 
         // Display
         displayGasInfo(gasPriceGwei, recommendation);
@@ -179,6 +190,11 @@ async function main() {
 
     log.info('Initializing Gas Optimizer...');
     log.info(`Update interval: ${GAS_CONFIG.UPDATE_INTERVAL}ms`);
+
+    // Start WebSocket heartbeat
+    const stopHeartbeat = startHeartbeat('gas-optimizer');
+    log.success('WebSocket heartbeat started');
+
     log.info('Starting gas price monitoring...');
     console.log('');
 

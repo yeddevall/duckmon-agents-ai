@@ -1,6 +1,7 @@
 import { createPublicClient, http, formatEther } from 'viem';
 import { monadMainnet, contracts, LAUNCH_CONFIG, ERC20_ABI } from './config.js';
 import AI from '../shared/aiModule.js';
+import { sendTokenLaunch, startHeartbeat } from '../shared/websocketClient.js';
 import dotenv from 'dotenv';
 
 dotenv.config({ path: '../../.env' });
@@ -130,6 +131,16 @@ async function analyzeNewToken(token) {
             timestamp: Date.now(),
         });
 
+        // Broadcast to WebSocket server
+        await sendTokenLaunch({
+            name: token.name,
+            symbol: token.symbol,
+            address: token.address,
+            safetyScore,
+            deployerPercent: deployerPercent.toFixed(2),
+            totalSupply: supply,
+        }).catch(err => log.warning(`WebSocket broadcast failed: ${err.message}`));
+
         // Generate alert
         if (safetyScore >= 70) {
             performance.safeTokens++;
@@ -233,6 +244,11 @@ async function main() {
     log.info('Initializing Token Launch Detector...');
     log.info(`Scan interval: ${LAUNCH_CONFIG.SCAN_INTERVAL}ms`);
     log.info(`Min liquidity: $${LAUNCH_CONFIG.MIN_LIQUIDITY_USD}`);
+
+    // Start WebSocket heartbeat
+    const stopHeartbeat = startHeartbeat('token-launch-detector');
+    log.success('WebSocket heartbeat started');
+
     log.info('Safety checks: ENABLED ✅');
     console.log('');
 
