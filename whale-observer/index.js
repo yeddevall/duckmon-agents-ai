@@ -1,264 +1,213 @@
-import { createPublicClient, createWalletClient, http, formatEther, parseEther } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { monadMainnet, contracts, TOKENS, WHALE_CONFIG, ERC20_ABI, DUCK_SIGNALS_ABI } from './config.js';
+// DUCKMON WHALE OBSERVER v2.0 - Advanced Whale Tracking & Network Intelligence
+import { formatEther, parseAbiItem } from 'viem';
+import { contracts, TOKENS, WHALE_CONFIG, ERC20_ABI } from '../shared/config.js';
+import { createLogger, formatNumber, formatAddress, formatUptime } from '../shared/logger.js';
+import { createClients, getPublicClient, registerAgent, postSignal } from '../shared/wallet.js';
+import { fetchPrice } from '../shared/priceService.js';
 import AI from '../shared/aiModule.js';
-import dotenv from 'dotenv';
-
-dotenv.config({ path: '../../.env' });
-
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                      🐋 DUCKMON WHALE OBSERVER v2.0                           ║
-// ║       Advanced AI-Powered Whale Tracking & Network Intelligence               ║
-// ║              Leveraging Monad's 10K TPS & 400ms Blocks                        ║
-// ║                           Powered by Duckmon                                    ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
 
 const AGENT_NAME = 'Whale Observer v2.0';
-const AGENT_VERSION = '2.0.0';
+const log = createLogger('Whale');
 
-// ══════════════════════════════════════════════════════════════════════════════
-// STATE MANAGEMENT
-// ══════════════════════════════════════════════════════════════════════════════
+const CONFIG = {
+    SCAN_INTERVAL: 300000,       // 5 min whale scan
+    NETWORK_INTERVAL: 120000,    // 2 min network check
+    STATUS_INTERVAL: 600000,     // 10 min status display
+    LOOKBACK_BLOCKS: 500n,       // Transfer event lookback
+    MIN_TRANSFER_DUCK: 1_000_000, // Min DUCK for whale alert
+};
 
-// Tracked wallets with historical data
+// State
 const trackedWallets = new Map();
+let lastScannedBlock = 0n;
+let isRegistered = false;
 
-// Network statistics
 const networkStats = {
     currentBlock: 0,
-    avgGasPrice: 0,
+    avgGasGwei: 0,
+    avgTxPerBlock: 0,
     txCount24h: 0,
-    activeAddresses24h: 0,
-    totalVolume24h: 0,
     lastUpdate: null,
 };
 
-// Agent performance
 const performance = {
     totalAlerts: 0,
     whaleAlerts: 0,
     networkAlerts: 0,
+    transfersScanned: 0,
     startTime: Date.now(),
-    lastAlertTime: null,
 };
 
-// Agent state
-const agentState = {
-    isRunning: true,
-    isRegistered: false,
-    lastCheck: null,
-};
+// ═══════════════════════════════════════════════════════════════════
+// TRANSFER EVENT SCANNING (Real whale discovery)
+// ═══════════════════════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════════════════════════════════
-// BLOCKCHAIN CLIENTS
-// ══════════════════════════════════════════════════════════════════════════════
+const TRANSFER_EVENT = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
 
-const publicClient = createPublicClient({
-    chain: monadMainnet,
-    transport: http(monadMainnet.rpcUrls.default.http[0]),
-});
+async function scanTransferEvents() {
+    const publicClient = getPublicClient();
 
-let walletClient = null;
-let account = null;
-
-// ══════════════════════════════════════════════════════════════════════════════
-// LOGGING UTILITIES
-// ══════════════════════════════════════════════════════════════════════════════
-
-const log = {
-    info: (msg) => console.log(`\x1b[36m[INFO]\x1b[0m ${msg}`),
-    success: (msg) => console.log(`\x1b[32m[SUCCESS]\x1b[0m ${msg}`),
-    warning: (msg) => console.log(`\x1b[33m[WARNING]\x1b[0m ${msg}`),
-    error: (msg) => console.log(`\x1b[31m[ERROR]\x1b[0m ${msg}`),
-    whale: (msg) => console.log(`\x1b[35m[🐋 WHALE]\x1b[0m ${msg}`),
-    network: (msg) => console.log(`\x1b[34m[📡 NETWORK]\x1b[0m ${msg}`),
-};
-
-function formatNumber(num) {
-    if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(2)}B`;
-    if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`;
-    if (num >= 1_000) return `${(num / 1_000).toFixed(2)}K`;
-    return num.toFixed(2);
-}
-
-function formatAddress(addr) {
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-}
-
-function formatUptime(ms) {
-    const seconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// WALLET INITIALIZATION
-// ══════════════════════════════════════════════════════════════════════════════
-
-function initWallet() {
-    const privateKey = process.env.PRIVATE_KEY;
-    if (privateKey) {
-        const formattedKey = privateKey.startsWith('0x') ? privateKey : `0x${privateKey}`;
-        account = privateKeyToAccount(formattedKey);
-        walletClient = createWalletClient({
-            account,
-            chain: monadMainnet,
-            transport: http(monadMainnet.rpcUrls.default.http[0]),
-        });
-        log.info(`Wallet initialized: ${formatAddress(account.address)}`);
-        return true;
-    }
-    log.warning('No private key found, running in read-only mode');
-    return false;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// WHALE TRACKING FUNCTIONS
-// ══════════════════════════════════════════════════════════════════════════════
-
-async function getTokenBalance(tokenAddress, walletAddress) {
     try {
+        const currentBlock = await publicClient.getBlockNumber();
+
+        // On first run, start from recent blocks
+        if (lastScannedBlock === 0n) {
+            lastScannedBlock = currentBlock - CONFIG.LOOKBACK_BLOCKS;
+        }
+
+        // Don't re-scan same blocks
+        if (currentBlock <= lastScannedBlock) return [];
+
+        const fromBlock = lastScannedBlock + 1n;
+        const toBlock = currentBlock;
+
+        log.info(`Scanning blocks ${fromBlock} to ${toBlock} for DUCK transfers...`);
+
+        const logs = await publicClient.getLogs({
+            address: contracts.DUCK_TOKEN,
+            event: TRANSFER_EVENT,
+            fromBlock,
+            toBlock,
+        });
+
+        lastScannedBlock = toBlock;
+        performance.transfersScanned += logs.length;
+
+        // Filter large transfers
+        const whaleTransfers = [];
+        for (const transferLog of logs) {
+            const value = parseFloat(formatEther(transferLog.args.value));
+            if (value >= CONFIG.MIN_TRANSFER_DUCK) {
+                whaleTransfers.push({
+                    from: transferLog.args.from,
+                    to: transferLog.args.to,
+                    amount: value,
+                    blockNumber: Number(transferLog.blockNumber),
+                    txHash: transferLog.transactionHash,
+                });
+
+                // Track both wallets
+                trackWallet(transferLog.args.from, -value);
+                trackWallet(transferLog.args.to, value);
+            }
+        }
+
+        if (whaleTransfers.length > 0) {
+            log.whale(`Found ${whaleTransfers.length} whale transfers in ${Number(toBlock - fromBlock)} blocks`);
+        }
+
+        return whaleTransfers;
+    } catch (error) {
+        log.warning(`Transfer scan error: ${error.message}`);
+        return [];
+    }
+}
+
+function trackWallet(address, balanceChange) {
+    const existing = trackedWallets.get(address) || {
+        address,
+        totalIn: 0,
+        totalOut: 0,
+        netFlow: 0,
+        txCount: 0,
+        firstSeen: Date.now(),
+        lastSeen: Date.now(),
+        profile: 'UNKNOWN',
+    };
+
+    if (balanceChange > 0) existing.totalIn += balanceChange;
+    else existing.totalOut += Math.abs(balanceChange);
+
+    existing.netFlow = existing.totalIn - existing.totalOut;
+    existing.txCount++;
+    existing.lastSeen = Date.now();
+    existing.profile = classifyWalletProfile(existing);
+
+    trackedWallets.set(address, existing);
+}
+
+function classifyWalletProfile(wallet) {
+    const { totalIn, totalOut, txCount } = wallet;
+
+    if (txCount <= 1) return 'NEW';
+    if (totalIn > 0 && totalOut === 0) return 'ACCUMULATOR';
+    if (totalOut > 0 && totalIn === 0) return 'DISTRIBUTOR';
+
+    const ratio = totalIn / (totalOut || 1);
+    if (ratio > 2) return 'ACCUMULATOR';
+    if (ratio < 0.5) return 'DISTRIBUTOR';
+    if (txCount > 5) return 'TRADER';
+    return 'MIXED';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WALLET ANALYSIS
+// ═══════════════════════════════════════════════════════════════════
+
+async function getTokenBalance(walletAddress) {
+    try {
+        const publicClient = getPublicClient();
         const balance = await publicClient.readContract({
-            address: tokenAddress,
+            address: contracts.DUCK_TOKEN,
             abi: ERC20_ABI,
             functionName: 'balanceOf',
             args: [walletAddress],
         });
         return parseFloat(formatEther(balance));
-    } catch (error) {
-        log.error(`Failed to get balance: ${error.message}`);
+    } catch {
         return 0;
     }
 }
 
-async function getTokenTotalSupply(tokenAddress) {
-    try {
-        const supply = await publicClient.readContract({
-            address: tokenAddress,
-            abi: ERC20_ABI,
-            functionName: 'totalSupply',
-        });
-        return parseFloat(formatEther(supply));
-    } catch (error) {
-        return TOKENS.DUCK.totalSupply;
-    }
-}
-
-async function fetchTopHolders() {
-    // In production, this would query an indexer or subgraph
-    // For hackathon, we'll use known tracked addresses + random discovery
-    try {
-        const response = await fetch(
-            `https://api.dexscreener.com/latest/dex/tokens/${contracts.DUCK_TOKEN}`
-        );
-        const data = await response.json();
-
-        if (data.pairs && data.pairs.length > 0) {
-            // Extract unique addresses from liquidity pools
-            const addresses = new Set();
-            data.pairs.forEach(pair => {
-                if (pair.pairAddress) addresses.add(pair.pairAddress);
-            });
-            return Array.from(addresses);
-        }
-    } catch (error) {
-        log.warning('Could not fetch top holders from DexScreener');
-    }
-
-    // Return known contract addresses as whale-watch targets
-    return [
-        contracts.BONDING_CURVE_ROUTER, // Bonding Curve Router
-        contracts.DEX_ROUTER,           // DEX Router
-    ];
-}
-
-async function analyzeWallet(address) {
-    const balance = await getTokenBalance(contracts.DUCK_TOKEN, address);
-    const totalSupply = await getTokenTotalSupply(contracts.DUCK_TOKEN);
-    const percentOfSupply = (balance / totalSupply) * 100;
-
-    const previous = trackedWallets.get(address);
-    const balanceChange = previous ? balance - previous.balance : 0;
-    const percentChange = previous && previous.balance > 0
-        ? ((balance - previous.balance) / previous.balance) * 100
-        : 0;
-
-    const walletData = {
-        address,
-        balance,
-        percentOfSupply,
-        balanceChange,
-        percentChange,
-        lastUpdate: Date.now(),
-        previousBalance: previous?.balance || balance,
-        isWhale: percentOfSupply >= WHALE_CONFIG.DUCK_WHALE_THRESHOLD,
-    };
-
-    trackedWallets.set(address, walletData);
-    return walletData;
-}
-
-function classifyWhaleActivity(walletData) {
-    const { balanceChange, percentOfSupply, percentChange } = walletData;
+function classifyWhaleActivity(transfer) {
+    const { amount } = transfer;
     const totalSupply = TOKENS.DUCK.totalSupply;
-    const changePercent = Math.abs(balanceChange) / totalSupply * 100;
+    const percentOfSupply = (amount / totalSupply) * 100;
 
-    if (balanceChange > 0) {
-        if (changePercent >= WHALE_CONFIG.MEGA_TRANSFER_THRESHOLD) {
-            return { type: 'MEGA_ACCUMULATION', impact: 'CRITICAL', sentiment: 'VERY_BULLISH' };
-        } else if (changePercent >= WHALE_CONFIG.LARGE_TRANSFER_THRESHOLD) {
-            return { type: 'ACCUMULATION', impact: 'HIGH', sentiment: 'BULLISH' };
-        }
-        return { type: 'MINOR_BUY', impact: 'LOW', sentiment: 'NEUTRAL' };
-    } else if (balanceChange < 0) {
-        if (changePercent >= WHALE_CONFIG.MEGA_TRANSFER_THRESHOLD) {
-            return { type: 'MEGA_DISTRIBUTION', impact: 'CRITICAL', sentiment: 'VERY_BEARISH' };
-        } else if (changePercent >= WHALE_CONFIG.LARGE_TRANSFER_THRESHOLD) {
-            return { type: 'DISTRIBUTION', impact: 'HIGH', sentiment: 'BEARISH' };
-        }
-        return { type: 'MINOR_SELL', impact: 'LOW', sentiment: 'NEUTRAL' };
+    if (percentOfSupply >= WHALE_CONFIG.MEGA_TRANSFER_THRESHOLD) {
+        return { type: 'MEGA_TRANSFER', impact: 'CRITICAL', sentiment: 'VERY_HIGH_IMPACT' };
+    } else if (percentOfSupply >= WHALE_CONFIG.LARGE_TRANSFER_THRESHOLD) {
+        return { type: 'LARGE_TRANSFER', impact: 'HIGH', sentiment: 'HIGH_IMPACT' };
     }
-    return { type: 'NO_CHANGE', impact: 'NONE', sentiment: 'NEUTRAL' };
+    return { type: 'WHALE_TRANSFER', impact: 'MODERATE', sentiment: 'MODERATE_IMPACT' };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// NETWORK MONITORING
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// NETWORK MONITORING (Fixed gas price bug)
+// ═══════════════════════════════════════════════════════════════════
 
 async function getNetworkStats() {
     try {
+        const publicClient = getPublicClient();
         const [blockNumber, gasPrice] = await Promise.all([
             publicClient.getBlockNumber(),
             publicClient.getGasPrice(),
         ]);
 
-        // Get recent blocks for TX analysis
+        // FIX: gasPrice is already in wei, convert to gwei properly
+        // Old bug: formatEther(gasPrice * BigInt(1e9)) = nonsensical value
+        const gasPriceGwei = Number(gasPrice) / 1e9;
+
+        // Sample recent blocks
         const recentBlocks = [];
-        for (let i = 0; i < 10; i++) {
+        for (let i = 0; i < 5; i++) {
             try {
-                const block = await publicClient.getBlock({
-                    blockNumber: blockNumber - BigInt(i),
-                });
+                const block = await publicClient.getBlock({ blockNumber: blockNumber - BigInt(i) });
                 recentBlocks.push(block);
-            } catch (e) {
-                break;
-            }
+            } catch { break; }
         }
 
         const avgTxPerBlock = recentBlocks.length > 0
             ? recentBlocks.reduce((sum, b) => sum + b.transactions.length, 0) / recentBlocks.length
             : 0;
 
-        const avgGas = parseFloat(formatEther(gasPrice * BigInt(1e9))).toFixed(4);
-
         networkStats.currentBlock = Number(blockNumber);
-        networkStats.avgGasPrice = parseFloat(avgGas);
+        networkStats.avgGasGwei = gasPriceGwei;
         networkStats.avgTxPerBlock = Math.round(avgTxPerBlock);
         networkStats.lastUpdate = Date.now();
 
-        // Estimate 24h metrics (blocks per day * avg tx)
-        const blocksPerDay = 86400 / 1; // ~1 second blocks on Monad
+        // Monad: ~1 second blocks
+        const blocksPerDay = 86400;
         networkStats.txCount24h = Math.round(avgTxPerBlock * blocksPerDay);
 
         return networkStats;
@@ -269,297 +218,187 @@ async function getNetworkStats() {
 }
 
 function assessNetworkHealth() {
-    const { avgGasPrice, avgTxPerBlock } = networkStats;
+    const { avgGasGwei, avgTxPerBlock } = networkStats;
 
-    let congestionLevel = 'LOW';
+    let congestion = 'LOW';
     let healthScore = 100;
 
-    if (avgGasPrice > 100) {
-        congestionLevel = 'CRITICAL';
-        healthScore = 40;
-    } else if (avgGasPrice > 50) {
-        congestionLevel = 'HIGH';
-        healthScore = 60;
-    } else if (avgGasPrice > 25) {
-        congestionLevel = 'MODERATE';
-        healthScore = 80;
-    }
+    if (avgGasGwei > 100) { congestion = 'CRITICAL'; healthScore = 40; }
+    else if (avgGasGwei > 50) { congestion = 'HIGH'; healthScore = 60; }
+    else if (avgGasGwei > 25) { congestion = 'MODERATE'; healthScore = 80; }
 
-    // Adjust for transaction volume
     if (avgTxPerBlock > 1000) healthScore += 10;
 
     return {
-        congestionLevel,
+        congestion,
         healthScore: Math.min(100, healthScore),
-        recommendation: congestionLevel === 'LOW' ? 'OPTIMAL_CONDITIONS' : 'WAIT_FOR_LOWER_GAS',
+        recommendation: congestion === 'LOW' ? 'OPTIMAL' : 'WAIT_FOR_LOWER_GAS',
     };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// ALERT GENERATION
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// ALERT POSTING
+// ═══════════════════════════════════════════════════════════════════
 
-function generateWhaleAlertReason(walletData, activity) {
-    const {
-        address,
-        balance,
-        percentOfSupply,
-        balanceChange,
-        percentChange,
-    } = walletData;
-
-    const { type, impact, sentiment } = activity;
-    const network = assessNetworkHealth();
-
-    // Format: TYPE | Wallet | Balance Change | Holdings | Network | Sentiment
-    const reason = [
-        `🐋 ${type}`,
-        `Wallet: ${formatAddress(address)}`,
-        `Change: ${balanceChange >= 0 ? '+' : ''}${formatNumber(balanceChange)} DUCK (${percentChange >= 0 ? '+' : ''}${percentChange.toFixed(2)}%)`,
-        `Holdings: ${formatNumber(balance)} DUCK (${percentOfSupply.toFixed(2)}% supply)`,
-        `Network: ${networkStats.avgGasPrice.toFixed(2)} gwei | ${formatNumber(networkStats.txCount24h)} TX/24h`,
-        `Impact: ${impact} | ${sentiment}`,
-    ].join(' | ');
-
-    return reason;
-}
-
-function generateNetworkAlertReason() {
-    const health = assessNetworkHealth();
+async function postWhaleAlert(transfer, activity) {
+    const fromWallet = trackedWallets.get(transfer.from);
+    const toWallet = trackedWallets.get(transfer.to);
 
     const reason = [
-        `📡 NETWORK UPDATE`,
-        `Block: ${networkStats.currentBlock.toLocaleString()}`,
-        `Gas: ${networkStats.avgGasPrice.toFixed(2)} gwei`,
-        `TX/Block: ${networkStats.avgTxPerBlock}`,
-        `24h Volume: ~${formatNumber(networkStats.txCount24h)} TXs`,
-        `Congestion: ${health.congestionLevel}`,
-        `Health: ${health.healthScore}/100`,
-        `Status: ${health.recommendation}`,
+        `WHALE ${activity.type}`,
+        `${formatAddress(transfer.from)} -> ${formatAddress(transfer.to)}`,
+        `${formatNumber(transfer.amount)} DUCK`,
+        `From: ${fromWallet?.profile || 'UNKNOWN'}`,
+        `To: ${toWallet?.profile || 'UNKNOWN'}`,
+        `Impact: ${activity.impact}`,
     ].join(' | ');
 
-    return reason;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// BLOCKCHAIN POSTING
-// ══════════════════════════════════════════════════════════════════════════════
-
-async function registerAgent() {
-    if (!walletClient || !account) return false;
-    if (contracts.DUCK_SIGNALS === '0x0000000000000000000000000000000000000000') {
-        log.warning('DuckSignals contract not configured');
-        return false;
-    }
-
-    try {
-        // Check if already registered
-        const agentInfo = await publicClient.readContract({
-            address: contracts.DUCK_SIGNALS,
-            abi: DUCK_SIGNALS_ABI,
-            functionName: 'agents',
-            args: [account.address],
-        });
-
-        if (agentInfo[5]) { // isRegistered
-            log.success(`Agent already registered: ${agentInfo[0]}`);
-            agentState.isRegistered = true;
-            return true;
-        }
-
-        // Register new agent
-        const hash = await walletClient.writeContract({
-            address: contracts.DUCK_SIGNALS,
-            abi: DUCK_SIGNALS_ABI,
-            functionName: 'registerAgent',
-            args: [AGENT_NAME],
-        });
-
-        await publicClient.waitForTransactionReceipt({ hash });
-        log.success(`Agent registered on-chain: ${AGENT_NAME}`);
-        agentState.isRegistered = true;
-        return true;
-    } catch (error) {
-        log.error(`Registration failed: ${error.message}`);
-        return false;
-    }
-}
-
-async function postWhaleAlert(walletData, activity) {
-    let reason = generateWhaleAlertReason(walletData, activity);
-
-    // Calculate confidence based on impact
-    let confidence = 50;
-    if (activity.impact === 'CRITICAL') confidence = 95;
-    else if (activity.impact === 'HIGH') confidence = 85;
-    else if (activity.impact === 'MODERATE') confidence = 70;
-
-    // Determine signal type based on sentiment
+    // Determine signal type from receiver profile
     let signalType = 'HOLD';
-    if (activity.sentiment.includes('BULLISH')) signalType = 'BUY';
-    else if (activity.sentiment.includes('BEARISH')) signalType = 'SELL';
+    if (toWallet?.profile === 'ACCUMULATOR') signalType = 'BUY';
+    else if (fromWallet?.profile === 'DISTRIBUTOR') signalType = 'SELL';
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // AI ENHANCEMENT - Use Gemini for whale behavior analysis
-    // ═══════════════════════════════════════════════════════════════════════════
+    let confidence = 50;
+    if (activity.impact === 'CRITICAL') confidence = 90;
+    else if (activity.impact === 'HIGH') confidence = 75;
+    else confidence = 60;
+
+    log.whale(`${activity.type}: ${formatNumber(transfer.amount)} DUCK`);
+    console.log(`    ${formatAddress(transfer.from)} -> ${formatAddress(transfer.to)}`);
+
+    // AI analysis
     if (AI.isAIEnabled()) {
         try {
-            console.log('  🧠 Analyzing whale behavior with AI...');
-
-            const aiAnalysis = await AI.analyzeWhaleBehavior({
-                wallet: walletData.address,
-                balanceChange: walletData.balanceChange,
-                newBalance: walletData.balance,
-                percentOfSupply: walletData.percentOfSupply,
-                recentActivity: activity.type,
-                networkStats: {
-                    gasPrice: networkStats.avgGasPrice,
-                    txPerBlock: networkStats.avgTxPerBlock,
-                    congestion: networkStats.congestion || 'LOW'
-                }
+            const priceData = await fetchPrice();
+            const aiResult = await AI.analyzeWhaleBehavior({
+                transferAmount: transfer.amount,
+                fromProfile: fromWallet?.profile || 'UNKNOWN',
+                toProfile: toWallet?.profile || 'UNKNOWN',
+                totalSupplyPercent: (transfer.amount / TOKENS.DUCK.totalSupply) * 100,
+                currentPrice: priceData?.price || 0,
+                recentWhaleCount: performance.whaleAlerts,
             });
-
-            if (aiAnalysis) {
-                console.log(`  🧠 AI Analysis: ${aiAnalysis.behavior} - ${aiAnalysis.intent}`);
-                console.log(`  🧠 Market Impact: ${aiAnalysis.marketImpact}`);
-                console.log(`  🧠 Recommendation: ${aiAnalysis.recommendation}`);
-
-                // Enhance reason with AI insights
-                reason = `${reason} | 🧠 AI: ${aiAnalysis.behavior} - ${aiAnalysis.intent} | Impact: ${aiAnalysis.marketImpact} | ${aiAnalysis.recommendation}`;
-
-                // Adjust confidence based on AI analysis
-                if (aiAnalysis.marketImpact === 'CRITICAL') {
-                    confidence = Math.max(confidence, 90);
-                } else if (aiAnalysis.marketImpact === 'HIGH') {
-                    confidence = Math.max(confidence, 80);
+            if (aiResult) {
+                log.ai(`AI Whale Analysis: ${aiResult.intent || 'N/A'} - Impact: ${aiResult.priceImpact || 'N/A'}`);
+                if (aiResult.recommendation) {
+                    signalType = aiResult.recommendation === 'BUY' ? 'BUY' : aiResult.recommendation === 'SELL' ? 'SELL' : signalType;
                 }
             }
-        } catch (error) {
-            console.log(`  ⚠️  AI analysis failed: ${error.message}`);
+        } catch (err) {
+            log.warning(`AI whale analysis failed: ${err.message}`);
         }
     }
 
-    log.whale(`${activity.type} detected!`);
-    console.log(`   ${reason}`);
-
-    if (walletClient && account && agentState.isRegistered) {
-        try {
-            const hash = await walletClient.writeContract({
-                address: contracts.DUCK_SIGNALS,
-                abi: DUCK_SIGNALS_ABI,
-                functionName: 'postSignal',
-                args: [signalType, BigInt(confidence), parseEther('0'), reason],
-            });
-
-            await publicClient.waitForTransactionReceipt({ hash });
-            log.success(`Alert posted on-chain: ${hash.slice(0, 10)}...`);
-            performance.whaleAlerts++;
-        } catch (error) {
-            log.error(`Failed to post alert: ${error.message}`);
-        }
+    if (isRegistered) {
+        await postSignal(signalType, confidence, 0, reason, log);
     }
 
+    performance.whaleAlerts++;
     performance.totalAlerts++;
-    performance.lastAlertTime = Date.now();
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// MAIN ANALYSIS LOOP
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// MAIN ANALYSIS LOOPS
+// ═══════════════════════════════════════════════════════════════════
 
 async function runWhaleAnalysis() {
-    log.info('Starting whale analysis cycle...');
+    log.separator();
+    log.info('Starting whale scan...');
 
-    // Get top holders
-    const topHolders = await fetchTopHolders();
-    log.info(`Tracking ${topHolders.length} addresses`);
+    const transfers = await scanTransferEvents();
 
-    for (const address of topHolders) {
-        const walletData = await analyzeWallet(address);
+    for (const transfer of transfers) {
+        const activity = classifyWhaleActivity(transfer);
+        if (activity.impact !== 'NONE') {
+            await postWhaleAlert(transfer, activity);
+        }
+    }
 
-        if (walletData.isWhale && Math.abs(walletData.balanceChange) > 0) {
-            const activity = classifyWhaleActivity(walletData);
+    // Display top wallets
+    if (trackedWallets.size > 0) {
+        const topWhales = [...trackedWallets.values()]
+            .filter(w => Math.abs(w.netFlow) > CONFIG.MIN_TRANSFER_DUCK)
+            .sort((a, b) => Math.abs(b.netFlow) - Math.abs(a.netFlow))
+            .slice(0, 5);
 
-            if (activity.impact !== 'NONE' && activity.impact !== 'LOW') {
-                await postWhaleAlert(walletData, activity);
+        if (topWhales.length > 0) {
+            console.log('  TOP TRACKED WALLETS:');
+            for (const w of topWhales) {
+                const flowDir = w.netFlow >= 0 ? '\x1b[32m+' : '\x1b[31m';
+                console.log(`    ${formatAddress(w.address)} | ${flowDir}${formatNumber(w.netFlow)}\x1b[0m DUCK | ${w.profile} | ${w.txCount} txs`);
             }
         }
     }
 
-    agentState.lastCheck = Date.now();
+    log.info(`Tracked: ${trackedWallets.size} wallets | Scanned: ${performance.transfersScanned} transfers`);
 }
 
 async function runNetworkAnalysis() {
-    log.network('Analyzing network conditions...');
-
     await getNetworkStats();
     const health = assessNetworkHealth();
 
-    console.log(`
-╔══════════════════════════════════════════════════════════════════╗
-║                    📡 NETWORK STATUS                              ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Block Height:     ${String(networkStats.currentBlock).padEnd(44)}║
-║  Gas Price:        ${(networkStats.avgGasPrice.toFixed(2) + ' gwei').padEnd(44)}║
-║  TX/Block:         ${String(networkStats.avgTxPerBlock).padEnd(44)}║
-║  Est. 24h TXs:     ${formatNumber(networkStats.txCount24h).padEnd(44)}║
-║  Congestion:       ${health.congestionLevel.padEnd(44)}║
-║  Health Score:     ${(health.healthScore + '/100').padEnd(44)}║
-╚══════════════════════════════════════════════════════════════════╝
-    `);
+    log.network(`Block: ${networkStats.currentBlock.toLocaleString()} | Gas: ${networkStats.avgGasGwei.toFixed(2)} gwei | TX/Block: ${networkStats.avgTxPerBlock} | ${health.congestion}`);
 }
 
 async function printStatus() {
-    const uptime = formatUptime(Date.now() - performance.startTime);
-    const trackedCount = trackedWallets.size;
-
-    console.log(`
-╔══════════════════════════════════════════════════════════════════╗
-║                    🐋 WHALE OBSERVER STATUS                       ║
-╠══════════════════════════════════════════════════════════════════╣
-║  Agent:            ${AGENT_NAME.padEnd(44)}║
-║  Status:           ${(agentState.isRunning ? '🟢 RUNNING' : '🔴 STOPPED').padEnd(44)}║
-║  Registered:       ${(agentState.isRegistered ? '✅ YES' : '❌ NO').padEnd(44)}║
-║  Uptime:           ${uptime.padEnd(44)}║
-╠══════════════════════════════════════════════════════════════════╣
-║  Tracked Wallets:  ${String(trackedCount).padEnd(44)}║
-║  Total Alerts:     ${String(performance.totalAlerts).padEnd(44)}║
-║  Whale Alerts:     ${String(performance.whaleAlerts).padEnd(44)}║
-║  Network Alerts:   ${String(performance.networkAlerts).padEnd(44)}║
-╚══════════════════════════════════════════════════════════════════╝
-    `);
+    log.separator();
+    log.banner('DUCKMON WHALE OBSERVER v2.0 - Status');
+    console.log(`  Status:       Running`);
+    console.log(`  Registered:   ${isRegistered ? 'YES' : 'NO'}`);
+    console.log(`  Uptime:       ${formatUptime(Date.now() - performance.startTime)}`);
+    log.separator();
+    console.log(`  Tracked:      ${trackedWallets.size} wallets`);
+    console.log(`  Transfers:    ${performance.transfersScanned} scanned`);
+    console.log(`  Whale Alerts: ${performance.whaleAlerts}`);
+    console.log(`  Total Alerts: ${performance.totalAlerts}`);
+    log.separator();
+    console.log(`  Block:        ${networkStats.currentBlock.toLocaleString()}`);
+    console.log(`  Gas:          ${networkStats.avgGasGwei.toFixed(2)} gwei`);
+    console.log(`  TX/Block:     ${networkStats.avgTxPerBlock}`);
+    console.log(`  Est 24h TX:   ${formatNumber(networkStats.txCount24h)}`);
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// STARTUP
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// ENTRY POINT
+// ═══════════════════════════════════════════════════════════════════
 
 async function main() {
     console.log(`
-╔══════════════════════════════════════════════════════════════════╗
-║                                                                   ║
-║             🐋 DUCKMON WHALE OBSERVER v${AGENT_VERSION}                    ║
-║         Advanced Whale Tracking & Network Intelligence            ║
-║                      Powered by Monad                             ║
-║                                                                   ║
-╚══════════════════════════════════════════════════════════════════╝
-    `);
+╔══════════════════════════════════════════════════════════════╗
+║           DUCKMON WHALE OBSERVER v2.0                        ║
+║     Advanced Whale Tracking & Network Intelligence           ║
+║              Powered by Monad                                ║
+╚══════════════════════════════════════════════════════════════╝`);
 
-    // Initialize
-    initWallet();
-    await registerAgent();
+    log.info(`Starting ${AGENT_NAME}...`);
 
-    // Initial analysis
+    const { account } = createClients();
+    if (account) log.success(`Wallet: ${account.address.slice(0, 10)}...`);
+    isRegistered = await registerAgent(AGENT_NAME, log);
+
+    // Initial scans
     await runNetworkAnalysis();
     await runWhaleAnalysis();
     await printStatus();
 
-    // Schedule recurring analysis
-    setInterval(runNetworkAnalysis, WHALE_CONFIG.NETWORK_CHECK_INTERVAL);
-    setInterval(runWhaleAnalysis, WHALE_CONFIG.BALANCE_CHECK_INTERVAL);
-    setInterval(printStatus, 300000); // Every 5 minutes
+    // Schedule recurring
+    setInterval(async () => {
+        try { await runWhaleAnalysis(); }
+        catch (err) { log.error(`Whale scan error: ${err.message}`); }
+    }, CONFIG.SCAN_INTERVAL);
 
-    log.success('Whale Observer is now monitoring the Monad network!');
+    setInterval(async () => {
+        try { await runNetworkAnalysis(); }
+        catch (err) { log.error(`Network check error: ${err.message}`); }
+    }, CONFIG.NETWORK_INTERVAL);
+
+    setInterval(async () => {
+        try { await printStatus(); }
+        catch (err) { log.error(`Status error: ${err.message}`); }
+    }, CONFIG.STATUS_INTERVAL);
+
+    log.success('Whale Observer monitoring the Monad network!');
 }
 
+export { runWhaleAnalysis, runNetworkAnalysis, performance, trackedWallets };
 main().catch(console.error);

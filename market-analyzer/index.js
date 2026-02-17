@@ -1,402 +1,129 @@
-import { createPublicClient, http, formatEther, parseEther } from 'viem';
-import { monadMainnet, contracts, LENS_ABI } from './config.js';
-import dotenv from 'dotenv';
+// DUCKMON MARKET ANALYZER v3.0 - Advanced Market Intelligence & Alerts
+import { contracts } from '../shared/config.js';
+import { createLogger, formatPrice, formatNumber, formatUptime, getHealthBar } from '../shared/logger.js';
+import { createClients, registerAgent, postSignal } from '../shared/wallet.js';
+import { fetchPrice, buildHistory } from '../shared/priceService.js';
+import {
+    calculateRSI, calculateSMA, calculateBollingerBands,
+    calculateMomentum, calculateVolatility, calculateATR,
+    calculateTrendStrength, calculateFearGreedIndex, detectMarketRegime,
+    calculateSupportResistance, calculateVWAP, calculateIchimokuCloud,
+    calculateFibonacciLevels, generateFullAnalysis,
+} from '../shared/technical-analysis.js';
+import AI from '../shared/aiModule.js';
 
-dotenv.config({ path: '../../.env' });
+const AGENT_NAME = 'Market Analyzer v3.0';
+const log = createLogger('Market');
 
-// ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║                      📊 DUCKMON MARKET ANALYZER v2.0                         ║
-// ║                  Advanced Market Intelligence & Alerts                        ║
-// ║                           Powered by Monad                                    ║
-// ╚══════════════════════════════════════════════════════════════════════════════╝
-
-const DUCK_TOKEN = contracts.DUCK_TOKEN;
-const AGENT_NAME = 'Market Analyzer v2.0';
-const AGENT_VERSION = '2.0.0';
-
-// Configuration
 const CONFIG = {
-    ANALYSIS_INTERVAL: 900000,         // 15 minutes
+    ANALYSIS_INTERVAL: 900000,
     HISTORY_SIZE: 500,
-    WHALE_THRESHOLD: 0.03,             // 3% sudden move = whale
-    VOLATILITY_ALERT_THRESHOLD: 0.08,  // 8% volatility
+    WHALE_THRESHOLD: 0.03,
+    VOLATILITY_ALERT_THRESHOLD: 8,
     HEALTH_CRITICAL: 25,
     HEALTH_WARNING: 50,
 };
 
-// State
 let priceHistory = [];
 let volumeHistory = [];
-// Demo mode removed - all data from real sources
-let lastRealPrice = 0.000019;
+let isRegistered = false;
 
-// Alert tracking
 const alerts = {
     active: [],
     history: [],
     whaleCount: 0,
     volatilitySpikes: 0,
-    healthAlerts: 0,
 };
 
-// Market metrics
-const metrics = {
-    currentHealth: 50,
-    volatility: 0,
-    trend: 'NEUTRAL',
-    trendStrength: 0,
-    support: 0,
-    resistance: 0,
-    fearGreedIndex: 50,
-    momentum: 0,
-};
-
-// Performance
 const performance = {
     totalAnalyses: 0,
     startTime: Date.now(),
     alertsTriggered: 0,
 };
 
-// Agent state
-const agentState = {
-    isRunning: true,
-    lastAnalysis: null,
-};
+// ═══════════════════════════════════════════════════════════════════
+// ALERT GENERATION ENGINE
+// ═══════════════════════════════════════════════════════════════════
 
-// Client
-const publicClient = createPublicClient({
-    chain: monadMainnet,
-    transport: http(monadMainnet.rpcUrls.default.http[0]),
-});
+function detectWhaleMove(prices) {
+    if (prices.length < 3) return { detected: false };
 
-// ══════════════════════════════════════════════════════════════════════════════
-// UTILITY FUNCTIONS
-// ══════════════════════════════════════════════════════════════════════════════
+    const current = prices[prices.length - 1];
+    const previous = prices[prices.length - 2];
+    const change = Math.abs((current - previous) / previous);
 
-const log = {
-    info: (msg) => console.log(`\x1b[36m[INFO]\x1b[0m ${msg}`),
-    success: (msg) => console.log(`\x1b[32m[SUCCESS]\x1b[0m ${msg}`),
-    warning: (msg) => console.log(`\x1b[33m[WARNING]\x1b[0m ${msg}`),
-    error: (msg) => console.log(`\x1b[31m[ERROR]\x1b[0m ${msg}`),
-    alert: (level, msg) => {
-        const colors = { CRITICAL: '\x1b[31m', WARNING: '\x1b[33m', INFO: '\x1b[36m' };
-        const icons = { CRITICAL: '🚨', WARNING: '⚠️', INFO: 'ℹ️' };
-        console.log(`${colors[level] || '\x1b[37m'}[${icons[level]} ${level}]\x1b[0m ${msg}`);
-    },
-};
-
-function formatTime(ms) {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    const h = Math.floor(m / 60);
-    return `${h}h ${m % 60}m ${s % 60}s`;
+    return {
+        detected: change > CONFIG.WHALE_THRESHOLD,
+        priceChange: (change * 100).toFixed(2),
+        direction: current > previous ? 'BUY' : 'SELL',
+        confidence: Math.min((change / CONFIG.WHALE_THRESHOLD) * 100, 100),
+    };
 }
 
-function getHealthBar(health) {
-    const filled = Math.round(health / 10);
-    const empty = 10 - filled;
-    const color = health >= 70 ? '\x1b[32m' : health >= 40 ? '\x1b[33m' : '\x1b[31m';
-    return `${color}${'█'.repeat(filled)}${'░'.repeat(empty)}\x1b[0m`;
+function calculateHealthScore(volatility, trend, fearGreed, whaleDetected) {
+    let score = 50;
+
+    if (trend.direction === 'BULLISH') score += 15 + trend.strength * 0.1;
+    else if (trend.direction === 'BEARISH') score -= 15 + trend.strength * 0.1;
+
+    if (volatility > CONFIG.VOLATILITY_ALERT_THRESHOLD) score -= 25;
+    else if (volatility > 5) score -= 10;
+    else if (volatility < 2) score += 10;
+
+    if (fearGreed > 70) score += 5;
+    else if (fearGreed < 30) score -= 10;
+
+    if (whaleDetected) score -= 10;
+
+    return Math.max(0, Math.min(100, score));
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// PRICE FETCHING
-// ══════════════════════════════════════════════════════════════════════════════
+function generateAlerts(health, volatility, whale, trend, sr, currentPrice, regime) {
+    const newAlerts = [];
 
-async function fetchPrice() {
-
-
-    // Method 1: DexScreener API for accurate real-time data
-    try {
-        const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${DUCK_TOKEN}`);
-        const data = await response.json();
-
-        if (data.pairs && data.pairs.length > 0) {
-            const pair = data.pairs.find(p =>
-                p.baseToken?.symbol?.toUpperCase() === 'DUCK'
-            ) || data.pairs[0];
-
-            const priceNum = parseFloat(pair.priceNative || 0);
-            if (priceNum > 0) {
-                lastRealPrice = priceNum;
-                const volume24h = parseFloat(pair.volume?.h24 || 0);
-                log.info(`DexScreener: ${priceNum.toFixed(8)} MON | Vol: $${volume24h.toFixed(0)}`);
-                return {
-                    price: priceNum,
-                    timestamp: Date.now(),
-                    volume: volume24h,
-                    priceChange24h: parseFloat(pair.priceChange?.h24 || 0)
-                };
-            }
-        }
-    } catch (error) {
-        log.warning(`DexScreener error: ${error.message}`);
+    if (health < CONFIG.HEALTH_CRITICAL) {
+        newAlerts.push({ level: 'CRITICAL', type: 'HEALTH', message: `Market health critical: ${health.toFixed(0)}%` });
+    } else if (health < CONFIG.HEALTH_WARNING) {
+        newAlerts.push({ level: 'WARNING', type: 'HEALTH', message: `Market health declining: ${health.toFixed(0)}%` });
     }
 
-    // Method 2: Lens contract fallback
-    try {
-        const result = await publicClient.readContract({
-            address: contracts.LENS,
-            abi: LENS_ABI,
-            functionName: 'getAmountOut',
-            args: [DUCK_TOKEN, parseEther('1'), true],
-        });
-
-        const duckPerMon = Number(formatEther(result[1]));
-        const price = duckPerMon > 0 ? 1 / duckPerMon : lastRealPrice;
-
-        // Sanity check
-        if (price < 0.0000001 || price > 1000) {
-            log.warning(`Invalid price ${price}, using cached`);
-            return { price: lastRealPrice, timestamp: Date.now(), volume: 100 };
-        }
-
-        lastRealPrice = price;
-        return { price, timestamp: Date.now(), volume: 0 };
-    } catch (error) {
-        log.warning(`Lens fetch failed: ${error.message}`);
-        if (lastRealPrice > 0) {
-            log.warning(`Using last known price: ${lastRealPrice}`);
-            return { price: lastRealPrice, timestamp: Date.now(), volume: 0 };
-        }
-        log.error('No price data available from any source');
-        return null;
+    if (volatility > CONFIG.VOLATILITY_ALERT_THRESHOLD) {
+        newAlerts.push({ level: 'WARNING', type: 'VOLATILITY', message: `High volatility: ${volatility.toFixed(2)}%` });
+        alerts.volatilitySpikes++;
     }
+
+    if (whale.detected) {
+        newAlerts.push({ level: 'WARNING', type: 'WHALE', message: `Whale ${whale.direction}: ${whale.priceChange}% move` });
+        alerts.whaleCount++;
+    }
+
+    if (sr.support > 0 && currentPrice < sr.support * 1.02) {
+        newAlerts.push({ level: 'INFO', type: 'SUPPORT', message: `Approaching support: ${sr.support.toFixed(8)} MON` });
+    }
+    if (sr.resistance > 0 && currentPrice > sr.resistance * 0.98) {
+        newAlerts.push({ level: 'INFO', type: 'RESISTANCE', message: `Approaching resistance: ${sr.resistance.toFixed(8)} MON` });
+    }
+
+    if (regime === 'VOLATILE_CHOPPY') {
+        newAlerts.push({ level: 'WARNING', type: 'REGIME', message: 'Volatile choppy market detected - high risk' });
+    }
+
+    return newAlerts;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// MARKET ANALYSIS ENGINE
-// ══════════════════════════════════════════════════════════════════════════════
-
-class MarketAnalyzer {
-
-    // Volatility calculation (standard deviation / mean)
-    calculateVolatility(prices, period = 20) {
-        if (prices.length < period) return 0;
-
-        const recent = prices.slice(-period);
-        const mean = recent.reduce((s, p) => s + p.price, 0) / recent.length;
-        const variance = recent.reduce((s, p) => s + Math.pow(p.price - mean, 2), 0) / recent.length;
-
-        return Math.sqrt(variance) / mean;
-    }
-
-    // Whale detection (large sudden moves)
-    detectWhaleActivity(prices) {
-        if (prices.length < 3) return { detected: false };
-
-        const current = prices[prices.length - 1].price;
-        const previous = prices[prices.length - 2].price;
-        const change = Math.abs((current - previous) / previous);
-
-        const avgVolume = prices.slice(-10).reduce((s, p) => s + (p.volume || 0), 0) / 10;
-        const currentVolume = prices[prices.length - 1].volume || 0;
-        const volumeSpike = currentVolume > avgVolume * 3;
-
-        return {
-            detected: change > CONFIG.WHALE_THRESHOLD || volumeSpike,
-            priceChange: (change * 100).toFixed(2),
-            direction: current > previous ? 'BUY' : 'SELL',
-            volumeSpike,
-            confidence: Math.min((change / CONFIG.WHALE_THRESHOLD) * 100, 100),
-        };
-    }
-
-    // Support and Resistance levels
-    calculateLevels(prices) {
-        if (prices.length < 50) return { support: 0, resistance: 0 };
-
-        const recent = prices.slice(-50).map(p => p.price);
-        const sorted = [...recent].sort((a, b) => a - b);
-
-        // Support = 10th percentile, Resistance = 90th percentile
-        const support = sorted[Math.floor(sorted.length * 0.1)];
-        const resistance = sorted[Math.floor(sorted.length * 0.9)];
-
-        return { support, resistance };
-    }
-
-    // Trend analysis
-    analyzeTrend(prices) {
-        if (prices.length < 30) return { direction: 'NEUTRAL', strength: 0 };
-
-        const short = prices.slice(-10).reduce((s, p) => s + p.price, 0) / 10;
-        const medium = prices.slice(-20).reduce((s, p) => s + p.price, 0) / 20;
-        const long = prices.slice(-30).reduce((s, p) => s + p.price, 0) / 30;
-
-        const shortAboveMed = short > medium;
-        const medAboveLong = medium > long;
-
-        if (shortAboveMed && medAboveLong) {
-            const strength = ((short - long) / long) * 1000;
-            return { direction: 'BULLISH 📈', strength: Math.min(strength, 100) };
-        } else if (!shortAboveMed && !medAboveLong) {
-            const strength = ((long - short) / long) * 1000;
-            return { direction: 'BEARISH 📉', strength: Math.min(strength, 100) };
-        }
-
-        return { direction: 'NEUTRAL ➡️', strength: 10 };
-    }
-
-    // Momentum (Rate of Change)
-    calculateMomentum(prices, period = 10) {
-        if (prices.length < period) return 0;
-
-        const current = prices[prices.length - 1].price;
-        const past = prices[prices.length - period].price;
-
-        return ((current - past) / past) * 100;
-    }
-
-    // Fear & Greed Index (custom implementation)
-    calculateFearGreed(volatility, momentum, trend) {
-        let index = 50; // Neutral
-
-        // Volatility impact (high volatility = fear)
-        if (volatility > 0.05) index -= 15;
-        else if (volatility < 0.02) index += 10;
-
-        // Momentum impact
-        if (momentum > 5) index += 20;
-        else if (momentum > 2) index += 10;
-        else if (momentum < -5) index -= 20;
-        else if (momentum < -2) index -= 10;
-
-        // Trend impact
-        if (trend.direction.includes('BULLISH')) index += trend.strength * 0.2;
-        else if (trend.direction.includes('BEARISH')) index -= trend.strength * 0.2;
-
-        return Math.max(0, Math.min(100, index));
-    }
-
-    // Overall Market Health Score
-    calculateHealthScore(volatility, trend, fearGreed, whale) {
-        let score = 50;
-
-        // Trend bonus/penalty
-        if (trend.direction.includes('BULLISH')) {
-            score += 15 + trend.strength * 0.1;
-        } else if (trend.direction.includes('BEARISH')) {
-            score -= 15 + trend.strength * 0.1;
-        }
-
-        // Volatility penalty
-        if (volatility > CONFIG.VOLATILITY_ALERT_THRESHOLD) {
-            score -= 25;
-        } else if (volatility > 0.05) {
-            score -= 10;
-        } else if (volatility < 0.02) {
-            score += 10;
-        }
-
-        // Fear/Greed adjustment
-        if (fearGreed > 70) score += 5; // Greedy = good for price
-        else if (fearGreed < 30) score -= 10; // Fearful = bad
-
-        // Whale penalty
-        if (whale.detected) {
-            score -= 10;
-        }
-
-        return Math.max(0, Math.min(100, score));
-    }
-
-    // Generate alerts based on conditions
-    generateAlerts(health, volatility, whale, trend, levels, currentPrice) {
-        const newAlerts = [];
-
-        // Health alerts
-        if (health < CONFIG.HEALTH_CRITICAL) {
-            newAlerts.push({
-                level: 'CRITICAL',
-                type: 'HEALTH',
-                message: `Market health critical: ${health.toFixed(0)}%`,
-                timestamp: Date.now(),
-            });
-        } else if (health < CONFIG.HEALTH_WARNING) {
-            newAlerts.push({
-                level: 'WARNING',
-                type: 'HEALTH',
-                message: `Market health declining: ${health.toFixed(0)}%`,
-                timestamp: Date.now(),
-            });
-        }
-
-        // Volatility alerts
-        if (volatility > CONFIG.VOLATILITY_ALERT_THRESHOLD) {
-            newAlerts.push({
-                level: 'WARNING',
-                type: 'VOLATILITY',
-                message: `High volatility detected: ${(volatility * 100).toFixed(2)}%`,
-                timestamp: Date.now(),
-            });
-            alerts.volatilitySpikes++;
-        }
-
-        // Whale alerts
-        if (whale.detected) {
-            newAlerts.push({
-                level: 'WARNING',
-                type: 'WHALE',
-                message: `🐋 Whale ${whale.direction}: ${whale.priceChange}% move detected`,
-                timestamp: Date.now(),
-            });
-            alerts.whaleCount++;
-        }
-
-        // Support/Resistance alerts
-        if (levels.support > 0 && currentPrice < levels.support * 1.02) {
-            newAlerts.push({
-                level: 'INFO',
-                type: 'SUPPORT',
-                message: `Price approaching support level: ${levels.support.toFixed(8)} MON`,
-                timestamp: Date.now(),
-            });
-        }
-
-        if (levels.resistance > 0 && currentPrice > levels.resistance * 0.98) {
-            newAlerts.push({
-                level: 'INFO',
-                type: 'RESISTANCE',
-                message: `Price approaching resistance: ${levels.resistance.toFixed(8)} MON`,
-                timestamp: Date.now(),
-            });
-        }
-
-        // Trend reversal detection
-        if (priceHistory.length > 50) {
-            const oldTrend = this.analyzeTrend(priceHistory.slice(0, -20));
-            if (oldTrend.direction !== trend.direction && trend.strength > 20) {
-                newAlerts.push({
-                    level: 'WARNING',
-                    type: 'TREND_REVERSAL',
-                    message: `Trend reversal: ${oldTrend.direction} → ${trend.direction}`,
-                    timestamp: Date.now(),
-                });
-            }
-        }
-
-        return newAlerts;
-    }
-}
-
-const analyzer = new MarketAnalyzer();
-
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 // MAIN ANALYSIS LOOP
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 
 async function runAnalysis() {
-    const sep = '═'.repeat(60);
-    console.log(`\n${sep}`);
-    log.info('Running market analysis...');
+    log.separator();
+    log.info('Running advanced market analysis...');
 
-    // Fetch price
     const priceData = await fetchPrice();
-    priceHistory.push(priceData);
-    volumeHistory.push(priceData.volume || 0);
+    if (!priceData) { log.error('No price data'); return null; }
 
+    priceHistory.push(priceData.price);
+    volumeHistory.push(priceData.volume || 0);
     if (priceHistory.length > CONFIG.HISTORY_SIZE) {
         priceHistory = priceHistory.slice(-CONFIG.HISTORY_SIZE);
         volumeHistory = volumeHistory.slice(-CONFIG.HISTORY_SIZE);
@@ -404,143 +131,174 @@ async function runAnalysis() {
 
     const currentPrice = priceData.price;
 
-    // Calculate all metrics
-    const volatility = analyzer.calculateVolatility(priceHistory);
-    const whale = analyzer.detectWhaleActivity(priceHistory);
-    const levels = analyzer.calculateLevels(priceHistory);
-    const trend = analyzer.analyzeTrend(priceHistory);
-    const momentum = analyzer.calculateMomentum(priceHistory);
-    const fearGreed = analyzer.calculateFearGreed(volatility, momentum, trend);
-    const health = analyzer.calculateHealthScore(volatility, trend, fearGreed, whale);
+    // Full technical analysis from shared library
+    const fullAnalysis = priceHistory.length >= 30
+        ? generateFullAnalysis(priceHistory, volumeHistory)
+        : null;
 
-    // Update metrics
-    metrics.currentHealth = health;
-    metrics.volatility = volatility;
-    metrics.trend = trend.direction;
-    metrics.trendStrength = trend.strength;
-    metrics.support = levels.support;
-    metrics.resistance = levels.resistance;
-    metrics.fearGreedIndex = fearGreed;
-    metrics.momentum = momentum;
+    const volatility = calculateVolatility(priceHistory);
+    const trend = calculateTrendStrength(priceHistory);
+    const fearGreed = calculateFearGreedIndex(priceHistory, volumeHistory);
+    const regime = detectMarketRegime(priceHistory, volumeHistory);
+    const sr = calculateSupportResistance(priceHistory, volumeHistory);
+    const whale = detectWhaleMove(priceHistory);
+    const health = calculateHealthScore(volatility, trend, fearGreed, whale.detected);
+    const momentum = calculateMomentum(priceHistory);
+    const rsi = calculateRSI(priceHistory);
+    const atr = calculateATR(priceHistory);
+    const fib = calculateFibonacciLevels(priceHistory);
+
+    // Bollinger & Ichimoku
+    const bb = priceHistory.length >= 20 ? calculateBollingerBands(priceHistory) : null;
+    const ichimoku = priceHistory.length >= 52 ? calculateIchimokuCloud(priceHistory) : null;
 
     // Generate alerts
-    const newAlerts = analyzer.generateAlerts(health, volatility, whale, trend, levels, currentPrice);
-
-    // Store alerts
+    const newAlerts = generateAlerts(health, volatility, whale, trend, sr, currentPrice, regime);
     for (const alert of newAlerts) {
         alerts.active.push(alert);
         alerts.history.push(alert);
         performance.alertsTriggered++;
     }
-
-    // Keep only last 5 active alerts
-    if (alerts.active.length > 5) {
-        alerts.active = alerts.active.slice(-5);
-    }
+    if (alerts.active.length > 10) alerts.active = alerts.active.slice(-10);
 
     performance.totalAnalyses++;
 
-    // Display results
-    console.log(sep);
-    console.log('  📊 DUCKMON MARKET ANALYZER v2.0 - Intelligence Report');
-    console.log(sep);
-    console.log(`  💰 Price:       ${currentPrice.toFixed(8)} MON`);
-    console.log(`  💚 Health:      ${getHealthBar(health)} ${health.toFixed(0)}%`);
-    console.log(sep);
-    console.log('  📈 MARKET METRICS:');
-    console.log(`     Trend:       ${trend.direction} (${trend.strength.toFixed(1)}%)`);
-    console.log(`     Volatility:  ${(volatility * 100).toFixed(2)}%`);
-    console.log(`     Momentum:    ${momentum > 0 ? '+' : ''}${momentum.toFixed(2)}%`);
-    console.log(`     Fear/Greed:  ${fearGreed.toFixed(0)} (${fearGreed >= 60 ? 'Greed 🚀' : fearGreed <= 40 ? 'Fear 😰' : 'Neutral 😐'})`);
-    console.log(sep);
-    console.log('  🎯 KEY LEVELS:');
-    console.log(`     Support:     ${levels.support.toFixed(8)} MON`);
-    console.log(`     Resistance:  ${levels.resistance.toFixed(8)} MON`);
-    console.log(sep);
+    // AI Enhancement
+    let aiAnalysis = null;
+    if (AI.isAIEnabled() && fullAnalysis) {
+        try {
+            log.ai('Requesting AI market analysis...');
+            aiAnalysis = await AI.generateMarketAnalysis({
+                price: currentPrice,
+                priceChange24h: priceData.priceChange24h || 0,
+                volume24h: priceData.volume || 0,
+                rsi,
+                macd: fullAnalysis.macd.histogram,
+                macdSignal: fullAnalysis.macd.signal,
+                bollingerPosition: bb ? bb.percentB : 50,
+                momentum,
+                volatility,
+                stochasticRSI: fullAnalysis.stochasticRSI,
+                ichimoku: ichimoku ? { signal: ichimoku.signal } : { signal: 'N/A' },
+                regime,
+            });
+            if (aiAnalysis) {
+                log.ai(`AI: ${aiAnalysis.signal} (${aiAnalysis.confidence}%) - ${aiAnalysis.sentiment || 'N/A'}`);
+            }
+        } catch (err) {
+            log.warning(`AI unavailable: ${err.message}`);
+        }
+    }
+
+    // Display
+    log.banner('DUCKMON MARKET ANALYZER v3.0 - Intelligence Report', aiAnalysis ? 'AI-ENHANCED' : null);
+    console.log(`  Price:       ${formatPrice(currentPrice)} MON`);
+    console.log(`  Health:      ${getHealthBar(health)} ${health.toFixed(0)}%`);
+    log.separator();
+
+    console.log('  MARKET METRICS:');
+    console.log(`    Trend:       ${trend.direction} (${trend.strength.toFixed(1)}%)`);
+    console.log(`    Volatility:  ${volatility.toFixed(2)}%`);
+    console.log(`    Momentum:    ${momentum > 0 ? '+' : ''}${momentum.toFixed(2)}%`);
+    console.log(`    RSI:         ${rsi.toFixed(1)}`);
+    console.log(`    ATR:         ${atr.toFixed(8)}`);
+    console.log(`    Fear/Greed:  ${fearGreed} (${fearGreed >= 60 ? 'Greed' : fearGreed <= 40 ? 'Fear' : 'Neutral'})`);
+    console.log(`    Regime:      ${regime}`);
+    if (bb) console.log(`    Bollinger:   %B=${bb.percentB.toFixed(1)} BW=${bb.bandwidth.toFixed(2)}`);
+    if (ichimoku) console.log(`    Ichimoku:    ${ichimoku.signal}`);
+    log.separator();
+
+    console.log('  KEY LEVELS:');
+    console.log(`    Support:     ${sr.support.toFixed(8)} MON`);
+    console.log(`    Resistance:  ${sr.resistance.toFixed(8)} MON`);
+    if (fib) {
+        console.log(`    Fib 38.2%:   ${fib.level_38_2.toFixed(8)} MON`);
+        console.log(`    Fib 61.8%:   ${fib.level_61_8.toFixed(8)} MON`);
+    }
+
+    if (aiAnalysis) {
+        log.separator();
+        console.log('  AI ANALYSIS:');
+        console.log(`    Signal:      ${aiAnalysis.signal} (${aiAnalysis.confidence}%)`);
+        console.log(`    Sentiment:   ${aiAnalysis.sentiment || 'N/A'}`);
+        console.log(`    Support:     ${aiAnalysis.support || 'N/A'}`);
+        console.log(`    Resistance:  ${aiAnalysis.resistance || 'N/A'}`);
+        console.log(`    Risk/Reward: ${aiAnalysis.riskReward || 'N/A'}`);
+    }
+    log.separator();
 
     // Display alerts
     if (newAlerts.length > 0) {
-        console.log('  🚨 ALERTS:');
+        console.log('  ALERTS:');
         for (const alert of newAlerts) {
-            log.alert(alert.level, alert.message);
+            log.alert(`[${alert.level}] ${alert.message}`);
         }
-        console.log(sep);
+        log.separator();
     }
 
-    // Whale status
     if (whale.detected) {
-        console.log(`  🐋 WHALE DETECTED: ${whale.direction} pressure (${whale.priceChange}% move)`);
-        console.log(sep);
+        console.log(`  WHALE DETECTED: ${whale.direction} pressure (${whale.priceChange}% move)`);
+        log.separator();
     }
 
-    console.log(`  📊 Stats: ${performance.totalAnalyses} analyses | ${alerts.whaleCount} whales | ${alerts.volatilitySpikes} vol spikes`);
-    console.log(`  ⏱️  Uptime: ${formatTime(Date.now() - performance.startTime)}`);
-    console.log(sep);
+    console.log(`  Stats: ${performance.totalAnalyses} analyses | ${alerts.whaleCount} whales | ${alerts.volatilitySpikes} vol spikes`);
+    console.log(`  Uptime: ${formatUptime(Date.now() - performance.startTime)}`);
 
-    agentState.lastAnalysis = { health, volatility, trend, whale, alerts: newAlerts };
-    return agentState.lastAnalysis;
+    // Post best signal to blockchain
+    if (isRegistered && fullAnalysis) {
+        const signalType = trend.direction === 'BULLISH' ? 'BUY' : trend.direction === 'BEARISH' ? 'SELL' : 'HOLD';
+        const confidence = Math.round(Math.min(50 + trend.strength * 0.5, 95));
+
+        if (confidence >= 55) {
+            const reason = [
+                `Health:${health.toFixed(0)}%`,
+                `RSI:${rsi.toFixed(0)}`,
+                `F&G:${fearGreed}`,
+                `Regime:${regime}`,
+                aiAnalysis ? `AI:${aiAnalysis.signal}` : null,
+            ].filter(Boolean).join(' | ');
+
+            await postSignal(signalType, confidence, currentPrice, reason, log);
+        }
+    }
+
+    return { health, volatility, trend, whale, regime, fearGreed, alerts: newAlerts, aiAnalysis };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 // ENTRY POINT
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 
 async function main() {
-    console.clear();
     console.log(`
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                                                                              ║
-║   ███╗   ███╗ █████╗ ██████╗ ██╗  ██╗███████╗████████╗                       ║
-║   ████╗ ████║██╔══██╗██╔══██╗██║ ██╔╝██╔════╝╚══██╔══╝                       ║
-║   ██╔████╔██║███████║██████╔╝█████╔╝ █████╗     ██║                          ║
-║   ██║╚██╔╝██║██╔══██║██╔══██╗██╔═██╗ ██╔══╝     ██║                          ║
-║   ██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██╗███████╗   ██║                          ║
-║   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝                          ║
-║                                                                              ║
-║      █████╗ ███╗   ██╗ █████╗ ██╗  ██╗   ██╗███████╗███████╗██████╗          ║
-║     ██╔══██╗████╗  ██║██╔══██╗██║  ╚██╗ ██╔╝╚══███╔╝██╔════╝██╔══██╗         ║
-║     ███████║██╔██╗ ██║███████║██║   ╚████╔╝   ███╔╝ █████╗  ██████╔╝         ║
-║     ██╔══██║██║╚██╗██║██╔══██║██║    ╚██╔╝   ███╔╝  ██╔══╝  ██╔══██╗         ║
-║     ██║  ██║██║ ╚████║██║  ██║███████╗██║   ███████╗███████╗██║  ██║         ║
-║     ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝╚═╝   ╚══════╝╚══════╝╚═╝  ╚═╝         ║
-║                                                                              ║
-║                    📊 MARKET ANALYZER v2.0                                   ║
-║              Real-time Market Intelligence                                   ║
-║                     Powered by Monad                                         ║
-║                                                                              ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-  `);
+╔══════════════════════════════════════════════════════════════╗
+║           DUCKMON MARKET ANALYZER v3.0                       ║
+║      Advanced Market Intelligence & Alerts                   ║
+║              Powered by Monad                                ║
+╚══════════════════════════════════════════════════════════════╝`);
 
-    console.log('');
     log.info(`Starting ${AGENT_NAME}...`);
-    log.info(`Version: ${AGENT_VERSION}`);
-    log.info(`DUCK Token: ${DUCK_TOKEN.slice(0, 10)}...${DUCK_TOKEN.slice(-8)}`);
-    log.info(`Analysis Interval: ${CONFIG.ANALYSIS_INTERVAL / 1000}s`);
-    console.log('');
+    log.info(`DUCK Token: ${contracts.DUCK_TOKEN.slice(0, 10)}...`);
+    log.info(`Interval: ${CONFIG.ANALYSIS_INTERVAL / 1000}s`);
 
-    // Build history
+    const { account } = createClients();
+    if (account) log.success(`Wallet: ${account.address.slice(0, 10)}...`);
+    isRegistered = await registerAgent(AGENT_NAME, log);
+
     log.info('Building price history...');
-    for (let i = 0; i < 60; i++) {
-        priceHistory.push(await fetchPrice());
-        process.stdout.write(`\r  Progress: ${i + 1}/60 data points`);
-        await new Promise(r => setTimeout(r, 40));
-    }
-    console.log('');
-    log.success(`Collected ${priceHistory.length} data points`);
-    console.log('');
+    const history = await buildHistory(60, 3000, log);
+    priceHistory = history.map(d => d.price);
+    volumeHistory = history.map(d => d.volume || 0);
 
-    // First analysis
     await runAnalysis();
 
-    // Main loop
     setInterval(async () => {
-        if (agentState.isRunning) {
-            await runAnalysis();
-        }
+        try { await runAnalysis(); }
+        catch (err) { log.error(`Analysis loop error: ${err.message}`); }
     }, CONFIG.ANALYSIS_INTERVAL);
 
-    log.success('Agent running! Press Ctrl+C to stop.');
+    log.success('Agent running!');
 }
 
-export { runAnalysis, agentState, metrics, alerts, MarketAnalyzer };
+export { runAnalysis, performance, alerts };
 main().catch(console.error);
