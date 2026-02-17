@@ -6,6 +6,7 @@
     "main": "orchestrator.mjs",
     "scripts": {
         "start": "concurrently \"node orchestrator.mjs\" \"node ws-server.js\"",
+        "start:all": "concurrently \"node orchestrator.mjs\" \"node ws-server.js\"",
         "start:orchestrator": "node orchestrator.mjs",
         "start:ws": "node ws-server.js",
         "trading-oracle": "node trading-oracle/index.js",
