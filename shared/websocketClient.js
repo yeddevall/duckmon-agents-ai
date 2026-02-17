@@ -115,6 +115,28 @@ export async function sendHeartbeat(agentId) {
 }
 
 /**
+ * Send trading signal/analysis result to server
+ * Used by agents to post analysis for any token
+ */
+export async function sendSignal(signal) {
+    try {
+        const response = await fetch(`${SERVER_URL}/api/signal`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(signal),
+        });
+
+        if (response.ok) {
+            log.success(`Signal sent: ${signal.agentName} → ${signal.type} (${signal.tokenSymbol || 'DUCK'})`);
+            return true;
+        }
+    } catch (error) {
+        log.error(`Failed to send signal: ${error.message}`);
+    }
+    return false;
+}
+
+/**
  * Start heartbeat interval for an agent
  */
 export function startHeartbeat(agentId, intervalMs = 30000) {
@@ -136,6 +158,7 @@ export default {
     sendTokenLaunch,
     sendGasUpdate,
     sendWhaleAlert,
+    sendSignal,
     sendHeartbeat,
     startHeartbeat,
 };
