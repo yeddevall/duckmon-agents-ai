@@ -4,7 +4,7 @@
 import dotenv from 'dotenv';
 dotenv.config({ path: '../.env' });
 
-const SERVER_URL = process.env.WEBSOCKET_SERVER_URL || 'http://localhost:3001';
+const SERVER_URL = process.env.WEBSOCKET_SERVER_URL || 'http://localhost:8080';
 
 const log = {
     info: (msg) => console.log(`\x1b[36m[WS]\x1b[0m ${msg}`),
