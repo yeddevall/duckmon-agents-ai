@@ -5,7 +5,11 @@
       "Bash(git add:*)",
       "Bash(git push:*)",
       "Bash(npm install)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "WebFetch(domain:fortunate-cooperation-production-f70f.up.railway.app)",
+      "Bash(git -C /Users/yedlabs/Desktop/duck-on-monad status)",
+      "Bash(git -C:*)",
+      "Bash(echo:*)"
     ]
   }
 }
