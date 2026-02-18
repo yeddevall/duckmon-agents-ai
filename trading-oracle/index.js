@@ -4,6 +4,7 @@ import { createLogger, formatPrice, formatUptime } from '../shared/logger.js';
 import { createClients, registerAgent, postSignal } from '../shared/wallet.js';
 import { fetchPrice, buildHistory } from '../shared/priceService.js';
 import { generateFullAnalysis } from '../shared/technical-analysis.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'Trading Oracle v3.0';
@@ -212,6 +213,21 @@ async function runAnalysis() {
     if (isRegistered && signal.confidence >= CONFIG.MIN_CONFIDENCE) {
         await postSignal(signal.type, signal.confidence, signal.price, signal.reason, log);
     }
+
+    // Send to ws-server for frontend
+    try {
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: signal.type,
+            confidence: signal.confidence,
+            price: signal.price,
+            reason: signal.reason,
+            category: 'technical',
+            indicators: signal.indicators,
+            aiEnhanced: signal.aiEnhanced || false,
+            aiData: signal.aiData || null,
+        });
+    } catch (e) { /* ws-server may be offline */ }
 
     return signal;
 }

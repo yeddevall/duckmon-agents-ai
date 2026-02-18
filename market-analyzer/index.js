@@ -10,6 +10,7 @@ import {
     calculateSupportResistance, calculateVWAP, calculateIchimokuCloud,
     calculateFibonacciLevels, generateFullAnalysis,
 } from '../shared/technical-analysis.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'Market Analyzer v3.0';
@@ -160,6 +161,7 @@ async function runAnalysis() {
         performance.alertsTriggered++;
     }
     if (alerts.active.length > 10) alerts.active = alerts.active.slice(-10);
+    if (alerts.history.length > 100) alerts.history = alerts.history.slice(-100);
 
     performance.totalAnalyses++;
 
@@ -265,6 +267,26 @@ async function runAnalysis() {
     return { health, volatility, trend, whale, regime, fearGreed, alerts: newAlerts, aiAnalysis };
 }
 
+// Send market intelligence to ws-server after each analysis
+async function broadcastMarketIntel(data) {
+    try {
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: data.trend.direction === 'BULLISH' ? 'BUY' : data.trend.direction === 'BEARISH' ? 'SELL' : 'HOLD',
+            confidence: Math.round(Math.min(50 + data.trend.strength * 0.5, 95)),
+            category: 'market-intelligence',
+            health: data.health,
+            volatility: data.volatility,
+            trend: data.trend,
+            regime: data.regime,
+            fearGreed: data.fearGreed,
+            whale: data.whale,
+            alerts: data.alerts,
+            aiAnalysis: data.aiAnalysis || null,
+        });
+    } catch (e) { /* ws-server may be offline */ }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // ENTRY POINT
 // ═══════════════════════════════════════════════════════════════════
@@ -293,7 +315,10 @@ async function main() {
     await runAnalysis();
 
     setInterval(async () => {
-        try { await runAnalysis(); }
+        try {
+            const result = await runAnalysis();
+            if (result) await broadcastMarketIntel(result);
+        }
         catch (err) { log.error(`Analysis loop error: ${err.message}`); }
     }, CONFIG.ANALYSIS_INTERVAL);
 

@@ -4,6 +4,7 @@ import { createLogger, formatPrice, formatNumber, formatUptime } from '../shared
 import { createClients, registerAgent, postSignal } from '../shared/wallet.js';
 import { fetchPrice, buildHistory } from '../shared/priceService.js';
 import { calculateMomentum, calculateVolatility, calculateTrendStrength } from '../shared/technical-analysis.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'Social Sentiment v1.0';
@@ -286,8 +287,8 @@ async function runAnalysis() {
     // Post to blockchain
     if (isRegistered) {
         const signalType = result.score >= CONFIG.BULLISH_THRESHOLD ? 'BUY' :
-                          result.score <= CONFIG.BEARISH_THRESHOLD ? 'SELL' : 'HOLD';
-        const confidence = Math.round(Math.min(50 + Math.abs(result.score - 50) * 0.8, 90));
+            result.score <= CONFIG.BEARISH_THRESHOLD ? 'SELL' : 'HOLD';
+        const confidence = Math.round(Math.min(50 + Math.abs(result.score - 50) * 0.8, 95));
 
         const reason = [
             `SENTIMENT`,
@@ -304,6 +305,32 @@ async function runAnalysis() {
             performance.signals++;
         }
     }
+
+    // Send to ws-server for frontend
+    try {
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: result.score >= CONFIG.BULLISH_THRESHOLD ? 'BUY' :
+                result.score <= CONFIG.BEARISH_THRESHOLD ? 'SELL' : 'HOLD',
+            confidence: Math.round(Math.min(50 + Math.abs(result.score - 50) * 0.8, 95)),
+            price: socialMetrics.price,
+            category: 'sentiment',
+            sentimentScore: result.score,
+            sentimentLabel: result.label,
+            components: result.components,
+            buySellRatio24h: result.buySellRatio24h,
+            volumeTrend: result.volumeTrend,
+            txActivity: result.txActivity,
+            priceChanges: {
+                '1h': socialMetrics.priceChange1h,
+                '6h': socialMetrics.priceChange6h,
+                '24h': socialMetrics.priceChange24h,
+            },
+            volume24h: socialMetrics.volume24h,
+            marketCap: socialMetrics.marketCap,
+            aiSentiment: aiSentiment || null,
+        });
+    } catch (e) { /* ws-server may be offline */ }
 
     previousMetrics = socialMetrics;
     return { sentiment: result, aiSentiment };

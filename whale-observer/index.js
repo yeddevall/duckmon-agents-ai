@@ -4,6 +4,7 @@ import { contracts, TOKENS, WHALE_CONFIG, ERC20_ABI } from '../shared/config.js'
 import { createLogger, formatNumber, formatAddress, formatUptime } from '../shared/logger.js';
 import { createClients, getPublicClient, registerAgent, postSignal } from '../shared/wallet.js';
 import { fetchPrice } from '../shared/priceService.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'Whale Observer v2.0';
@@ -290,8 +291,28 @@ async function postWhaleAlert(transfer, activity) {
     }
 
     if (isRegistered) {
-        await postSignal(signalType, confidence, 0, reason, log);
+        // Fixed: use actual price instead of 0
+        const priceForSignal = (await fetchPrice())?.price || 0;
+        await postSignal(signalType, confidence, priceForSignal, reason, log);
     }
+
+    // Send to ws-server for frontend
+    try {
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: signalType,
+            confidence,
+            price: (await fetchPrice())?.price || 0,
+            category: 'whale',
+            whaleType: activity.type,
+            impact: activity.impact,
+            from: transfer.from,
+            to: transfer.to,
+            amount: transfer.amount,
+            fromProfile: fromWallet?.profile || 'UNKNOWN',
+            toProfile: toWallet?.profile || 'UNKNOWN',
+        });
+    } catch (e) { /* ws-server may be offline */ }
 
     performance.whaleAlerts++;
     performance.totalAlerts++;

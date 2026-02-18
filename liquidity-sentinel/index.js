@@ -4,6 +4,7 @@ import { contracts, TOKENS, ERC20_ABI } from '../shared/config.js';
 import { createLogger, formatPrice, formatNumber, formatUptime, getHealthBar } from '../shared/logger.js';
 import { createClients, getPublicClient, registerAgent, postSignal } from '../shared/wallet.js';
 import { fetchPrice, getBondingProgress } from '../shared/priceService.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'Liquidity Sentinel v1.0';
@@ -272,7 +273,8 @@ async function runAnalysis() {
     // Post to blockchain
     if (isRegistered) {
         const signalType = state.rugRisk >= 70 ? 'SELL' : state.lpHealth === 'HEALTHY' ? 'BUY' : 'HOLD';
-        const confidence = Math.round(Math.min(50 + Math.abs(50 - state.rugRisk) * 0.8, 90));
+        // Fixed: confidence directly correlates with how extreme the rug risk is
+        const confidence = Math.round(Math.min(50 + Math.abs(50 - state.rugRisk) * 0.9, 95));
 
         const reason = [
             `LIQUIDITY`,
@@ -287,6 +289,28 @@ async function runAnalysis() {
             await postSignal(signalType, confidence, state.price, reason, log);
         }
     }
+
+    // Send to ws-server for frontend
+    try {
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: state.rugRisk >= 70 ? 'SELL' : state.lpHealth === 'HEALTHY' ? 'BUY' : 'HOLD',
+            confidence: Math.round(Math.min(50 + Math.abs(50 - state.rugRisk) * 0.9, 95)),
+            price: state.price,
+            category: 'liquidity',
+            bondingProgress: state.bondingProgress,
+            isGraduated: state.isGraduated,
+            liquidity: state.liquidity,
+            liquidityChange: state.liquidityChange,
+            rugRisk: state.rugRisk,
+            lpHealth: state.lpHealth,
+            priceImpact2Pct: state.priceImpact2Pct,
+            volume24h: state.volume24h,
+            buys24h: state.buys24h,
+            sells24h: state.sells24h,
+            aiAnalysis: aiAnalysis || null,
+        });
+    } catch (e) { /* ws-server may be offline */ }
 
     return state;
 }

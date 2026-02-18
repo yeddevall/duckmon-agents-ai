@@ -4,6 +4,7 @@ import { createLogger, formatUptime } from '../shared/logger.js';
 import { createClients, registerAgent, postPrediction } from '../shared/wallet.js';
 import { fetchPrice, buildHistory } from '../shared/priceService.js';
 import { calculateRSI, calculateSMA, calculateMomentum, calculateVolatility, calculateTrendStrength, calculateSupportResistance } from '../shared/technical-analysis.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'Prediction Bot v3.0';
@@ -230,6 +231,9 @@ async function verifyPendingPredictions() {
     }
 
     performance.pendingPredictions = performance.pendingPredictions.filter(p => !p.verified);
+    // TTL cleanup: remove predictions older than 6 hours that were never verified
+    const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+    performance.pendingPredictions = performance.pendingPredictions.filter(p => p.targetTime > sixHoursAgo);
     const total = performance.correct + performance.incorrect;
     if (total > 0) performance.accuracy = (performance.correct / total) * 100;
 }
@@ -297,6 +301,28 @@ async function runPrediction() {
     if (bestPred && isRegistered) {
         await postPrediction(bestPred.direction, bestPred.confidence, bestPred.currentPrice, bestPred.targetTime, log);
     }
+
+    // Send to ws-server for frontend
+    try {
+        const total = performance.correct + performance.incorrect;
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: bestPred?.direction || 'HOLD',
+            confidence: bestPred?.confidence || 50,
+            price: priceData.price,
+            category: 'prediction',
+            predictions: predictions.map(p => ({
+                horizon: p.horizon,
+                direction: p.direction,
+                confidence: p.confidence,
+                expectedPrice: p.expectedPrice,
+                expectedMove: p.expectedMove,
+                confidenceInterval: p.confidenceInterval,
+            })),
+            accuracy: total > 0 ? performance.accuracy.toFixed(1) : null,
+            verified: { correct: performance.correct, incorrect: performance.incorrect },
+        });
+    } catch (e) { /* ws-server may be offline */ }
 
     return predictions;
 }

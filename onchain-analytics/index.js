@@ -4,6 +4,7 @@ import { contracts, TOKENS, ERC20_ABI } from '../shared/config.js';
 import { createLogger, formatNumber, formatAddress, formatUptime, getHealthBar } from '../shared/logger.js';
 import { createClients, getPublicClient, registerAgent, postSignal } from '../shared/wallet.js';
 import { fetchPrice } from '../shared/priceService.js';
+import { sendSignal } from '../shared/websocketClient.js';
 import AI from '../shared/aiModule.js';
 
 const AGENT_NAME = 'On-Chain Analytics v1.0';
@@ -299,7 +300,7 @@ async function runAnalysis() {
     // Post to blockchain
     if (isRegistered) {
         const signalType = analytics.buySellRatio > 1.5 && analytics.organicScore > 60 ? 'BUY' :
-                          analytics.buySellRatio < 0.7 ? 'SELL' : 'HOLD';
+            analytics.buySellRatio < 0.7 ? 'SELL' : 'HOLD';
         const confidence = Math.round(Math.min(50 + analytics.organicScore * 0.3 + Math.abs(analytics.buySellRatio - 1) * 15, 90));
 
         const reason = [
@@ -317,6 +318,30 @@ async function runAnalysis() {
             performance.signals++;
         }
     }
+
+    // Send to ws-server for frontend
+    try {
+        await sendSignal({
+            agentName: AGENT_NAME,
+            type: analytics.buySellRatio > 1.5 && analytics.organicScore > 60 ? 'BUY' :
+                analytics.buySellRatio < 0.7 ? 'SELL' : 'HOLD',
+            confidence: Math.round(Math.min(50 + analytics.organicScore * 0.3 + Math.abs(analytics.buySellRatio - 1) * 15, 95)),
+            price: priceData?.price || 0,
+            category: 'onchain',
+            uniqueHolders: scanResult.uniqueHolders,
+            holderGrowth: scanResult.holderGrowth,
+            activeAddresses: scanResult.activeAddresses,
+            transfers: scanResult.transfers,
+            volume: scanResult.volume,
+            buys: scanResult.buys,
+            sells: scanResult.sells,
+            buySellRatio: analytics.buySellRatio,
+            velocity: analytics.velocity,
+            organicScore: analytics.organicScore,
+            avgTransferSize: analytics.avgTransferSize,
+            aiInsight: aiInsight || null,
+        });
+    } catch (e) { /* ws-server may be offline */ }
 
     return { scanResult, analytics: { ...analytics }, aiInsight };
 }
